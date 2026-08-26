@@ -1,0 +1,6 @@
+io.virtualization.sdk.spring.VirtualizationAutoConfiguration
+io.virtualization.sdk.spring.VpsAutoConfiguration
+io.virtualization.sdk.spring.DnsAutoConfiguration
+io.virtualization.sdk.spring.DomainAutoConfiguration
+io.virtualization.sdk.spring.CertificateAutoConfiguration
+io.virtualization.sdk.spring.web.VirtualizationWebAutoConfiguration

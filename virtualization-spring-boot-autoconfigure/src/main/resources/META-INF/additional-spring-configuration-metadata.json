@@ -1,0 +1,10 @@
+{
+  "properties": [
+    {
+      "name": "virtualization.web.enabled",
+      "type": "java.lang.Boolean",
+      "description": "Whether to expose the /api/v1/images and /api/v1/workloads REST endpoints when this application is a servlet web app. Has no effect otherwise.",
+      "defaultValue": true
+    }
+  ]
+}

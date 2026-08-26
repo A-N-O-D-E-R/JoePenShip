@@ -1,0 +1,26 @@
+spring:
+  application:
+    name: virtualization-example-spring
+
+# Example provider configuration — copy into the block below (or your own application.yml) and
+# fill in real values to point this example at an actual Proxmox / Incus / QEMU instance. Full
+# reference for every field: see the project README.
+#
+# virtualization:
+#   providers:
+#     production:
+#       type: proxmox
+#       endpoint: https://pve.example.com:8006
+#       token-id: root@pam!sdk
+#       token-secret: ${PROXMOX_TOKEN_SECRET}
+#     containers:
+#       type: incus                                            # also enables image management (ImageService)
+#       endpoint: https://incus.example.com:8443
+#       client-cert-path: /etc/virtualization/incus-client-cert.pem
+#       client-key-path: /etc/virtualization/incus-client-key.pem
+#     local:
+#       type: qemu
+#       socket: /run/qemu/myvm.qmp
+#   vps:
+#     provider: containers                                      # names one entry above; enables the VpsManager
+#                                                                # bean (and, on a servlet web app, /api/v1/vps)

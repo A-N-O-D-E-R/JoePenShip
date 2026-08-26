@@ -1,0 +1,139 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <groupId>io.virtualization.sdk</groupId>
+  <artifactId>virtualization-sdk</artifactId>
+  <version>0.1.0-SNAPSHOT</version>
+  <packaging>pom</packaging>
+
+  <name>Virtualization SDK</name>
+  <description>Java virtualization SDK, CLI and Spring Boot starter for Proxmox, Incus and QEMU/QMP.</description>
+
+  <modules>
+    <module>virtualization-core</module>
+    <module>virtualization-vps</module>
+    <module>virtualization-dns</module>
+    <module>virtualization-dns-mock</module>
+    <module>virtualization-domain</module>
+    <module>virtualization-certificate</module>
+    <module>virtualization-acme-mock</module>
+    <module>virtualization-provisioning</module>
+    <module>virtualization-deployment</module>
+    <module>virtualization-proxmox</module>
+    <module>virtualization-incus</module>
+    <module>virtualization-qemu</module>
+    <module>virtualization-cli</module>
+    <module>virtualization-spring-boot-autoconfigure</module>
+    <module>virtualization-spring-boot-starter</module>
+    <module>virtualization-spring-security</module>
+    <module>virtualization-example-spring</module>
+    <module>sablier-core</module>
+    <module>sablier-incus</module>
+  </modules>
+
+  <properties>
+    <maven.compiler.release>25</maven.compiler.release>
+    <project.build.sourceEncoding>UTF-8</project.build.sourceEncoding>
+    <project.reporting.outputEncoding>UTF-8</project.reporting.outputEncoding>
+
+    <junit.version>6.0.3</junit.version>
+    <assertj.version>3.27.7</assertj.version>
+    <slf4j.version>2.0.18</slf4j.version>
+    <jackson.version>2.22.1</jackson.version>
+    <picocli.version>4.7.7</picocli.version>
+    <spring-boot.version>4.1.0</spring-boot.version>
+
+    <maven-compiler-plugin.version>3.15.0</maven-compiler-plugin.version>
+    <maven-surefire-plugin.version>3.5.6</maven-surefire-plugin.version>
+    <maven-shade-plugin.version>3.6.1</maven-shade-plugin.version>
+    <!-- The root POM does not extend spring-boot-starter-parent (Phase 1 already established
+         its own build conventions), so spring-boot-maven-plugin's version isn't managed by the
+         imported spring-boot-dependencies BOM (that only manages dependencies, not plugins) —
+         pin it explicitly, same as maven-shade-plugin above. -->
+    <spring-boot-maven-plugin.version>${spring-boot.version}</spring-boot-maven-plugin.version>
+  </properties>
+
+  <dependencyManagement>
+    <dependencies>
+      <dependency>
+        <groupId>org.junit</groupId>
+        <artifactId>junit-bom</artifactId>
+        <version>${junit.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+      <dependency>
+        <groupId>com.fasterxml.jackson</groupId>
+        <artifactId>jackson-bom</artifactId>
+        <version>${jackson.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+      <dependency>
+        <groupId>org.assertj</groupId>
+        <artifactId>assertj-core</artifactId>
+        <version>${assertj.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.slf4j</groupId>
+        <artifactId>slf4j-api</artifactId>
+        <version>${slf4j.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>org.slf4j</groupId>
+        <artifactId>slf4j-simple</artifactId>
+        <version>${slf4j.version}</version>
+      </dependency>
+      <dependency>
+        <groupId>info.picocli</groupId>
+        <artifactId>picocli</artifactId>
+        <version>${picocli.version}</version>
+      </dependency>
+      <!-- Imported after junit-bom/jackson-bom above so our pinned JUnit 6 / Jackson 2.22
+           versions win over whatever spring-boot-dependencies itself manages for them. -->
+      <dependency>
+        <groupId>org.springframework.boot</groupId>
+        <artifactId>spring-boot-dependencies</artifactId>
+        <version>${spring-boot.version}</version>
+        <type>pom</type>
+        <scope>import</scope>
+      </dependency>
+    </dependencies>
+  </dependencyManagement>
+
+  <build>
+    <pluginManagement>
+      <plugins>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-compiler-plugin</artifactId>
+          <version>${maven-compiler-plugin.version}</version>
+          <configuration>
+            <!-- Spring MVC binds @RequestParam/@PathVariable by reflecting on the compiled
+                 parameter name when no explicit name is given on the annotation; without this
+                 flag that reflection has nothing to read and binding fails at request time. -->
+            <parameters>true</parameters>
+          </configuration>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-surefire-plugin</artifactId>
+          <version>${maven-surefire-plugin.version}</version>
+        </plugin>
+        <plugin>
+          <groupId>org.apache.maven.plugins</groupId>
+          <artifactId>maven-shade-plugin</artifactId>
+          <version>${maven-shade-plugin.version}</version>
+        </plugin>
+        <plugin>
+          <groupId>org.springframework.boot</groupId>
+          <artifactId>spring-boot-maven-plugin</artifactId>
+          <version>${spring-boot-maven-plugin.version}</version>
+        </plugin>
+      </plugins>
+    </pluginManagement>
+  </build>
+</project>
