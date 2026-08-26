@@ -1,5 +1,6 @@
-# Virtualization SDK
 
+# Virtualization SDK
+<img width="1254" height="1254" alt="ChatGPT Image Aug 26, 2026, 03_20_57 PM" src="https://github.com/user-attachments/assets/25a064df-9ad5-4b79-a2e3-74fbea40a914" />
 A Java 25 / Maven / Spring Boot 4 SDK for managing virtual machines across **Proxmox VE**,
 **Incus**, and **QEMU** (via QMP) with a provider-neutral core, a standalone CLI, and a Spring
 Boot starter, all producible as self-contained executable JARs. A parallel, equally
