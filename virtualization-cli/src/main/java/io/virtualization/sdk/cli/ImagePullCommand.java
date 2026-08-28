@@ -4,6 +4,7 @@ import io.virtualization.sdk.cli.output.CliResult;
 import io.virtualization.sdk.core.OperationStatus;
 import io.virtualization.sdk.core.image.ImagePullOperation;
 import io.virtualization.sdk.core.image.ImageReference;
+import io.virtualization.sdk.iam.Permissions;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
@@ -28,6 +29,7 @@ final class ImagePullCommand extends AbstractCliCommand {
 
     @Override
     public Integer call() {
+        requirePermission(Permissions.IMAGE_PULL);
         String providerName = requireProviderName();
         ImageReference ref = ImageReferences.parse(providerName, reference);
 

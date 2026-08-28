@@ -66,6 +66,46 @@
       <artifactId>virtualization-acme-mock</artifactId>
       <version>${project.version}</version>
     </dependency>
+    <dependency>
+      <groupId>io.virtualization.sdk</groupId>
+      <artifactId>virtualization-iam</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.virtualization.sdk</groupId>
+      <artifactId>virtualization-iam-store</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.virtualization.sdk</groupId>
+      <artifactId>virtualization-project</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.virtualization.sdk</groupId>
+      <artifactId>virtualization-network</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.virtualization.sdk</groupId>
+      <artifactId>virtualization-network-store</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.virtualization.sdk</groupId>
+      <artifactId>virtualization-storage</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.virtualization.sdk</groupId>
+      <artifactId>virtualization-loadbalancer</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.virtualization.sdk</groupId>
+      <artifactId>virtualization-caddy</artifactId>
+      <version>${project.version}</version>
+    </dependency>
 
     <dependency>
       <groupId>info.picocli</groupId>

@@ -2,6 +2,7 @@ package io.virtualization.sdk.cli;
 
 import io.virtualization.sdk.certificate.CertificateId;
 import io.virtualization.sdk.cli.output.CliResult;
+import io.virtualization.sdk.iam.Permissions;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Parameters;
 
@@ -13,6 +14,7 @@ final class CertificateRevokeCommand extends AbstractCliCommand {
 
     @Override
     public Integer call() {
+        requirePermission(Permissions.CERTIFICATE_REVOKE);
         certificateManager().revoke(new CertificateId(id));
         outputWriter().write(new CliResult.Ack(id, "Certificate revoked."), out());
         return ExitCodes.OK;

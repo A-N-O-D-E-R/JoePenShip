@@ -26,6 +26,11 @@ virtualization --provider production vm list --output json
 - [Image management](#image-management)
 - [VPS management](#vps-management)
 - [Domain, DNS & certificate management](#domain-dns--certificate-management)
+- [IAM & access control](#iam--access-control)
+- [Projects](#projects)
+- [Network, IPAM & firewall](#network-ipam--firewall)
+- [Storage](#storage)
+- [Load balancing](#load-balancing)
 - [Extension guide](#extension-guide)
 - [Testing](#testing)
 - [Known limitations](#known-limitations)
@@ -52,11 +57,20 @@ other.
 | `virtualization-acme-mock` | `Dns01AcmeProvider` — a real, tested DNS-01 challenge/validate/cleanup workflow over any `DnsProvider`, but not a real ACME wire client against a real CA. |
 | `virtualization-provisioning` | `VpsProvisioningService` — orchestrates `VpsManager` + `DomainManager` + `CertificateManager` for one combined "create a VPS, optionally point DNS at it, optionally get it a TLS certificate" call. A library API, not (yet) wired into the CLI or Spring — see [Domain, DNS & certificate management](#domain-dns--certificate-management). |
 | `virtualization-deployment` | `CertificateDeployer` — gets a certificate's material onto a deployment target and (optionally) triggers a reverse-proxy reload. `LocalFilesystemCertificateDeployer` is the only implementation, local-filesystem only, not a real SSH-based remote deployer. |
+| `virtualization-iam` | Provider-neutral identity and access management (`User`, `Role`, `Group`, `ApiCredential`, `AuthorizationService`) — see [IAM & access control](#iam--access-control). Pure Java, no framework dependency. |
+| `virtualization-iam-store` | `JsonFileIamStore` — the durable file-backed implementation of `virtualization-iam`'s repositories, shared by both the CLI and the Spring auto-configuration (the first repository in this codebase shipped as a real Spring default rather than a CLI-only convenience). |
+| `virtualization-project` | Standalone `Project`/`ProjectManager` tenancy model (create/get/list/delete) — see [Projects](#projects). Depends only on `virtualization-core`. Not yet referenced by any other resource type. |
+| `virtualization-network` | Provider-neutral network/IPAM/firewall model (`Network`, `Subnet`, `IpamService`, `FirewallRule`) — real IPv4 CIDR address allocation, network-scoped subnet-overlap rejection — see [Network, IPAM & firewall](#network-ipam--firewall). Depends only on `virtualization-core`. |
+| `virtualization-network-store` | `JsonFileNetworkStore` — the durable file-backed implementation of `virtualization-network`'s repositories, and the Spring default (not in-memory): losing allocation state on restart risks handing out an address already live on a running VPS. |
+| `virtualization-storage` | Provider-neutral storage-pool/volume/snapshot model and the `StorageProvider` seam interface — see [Storage](#storage). Depends only on `virtualization-core`; no backend dependency. |
+| `virtualization-loadbalancer` | Provider-neutral load-balancer/route/backend model and the `LoadBalancerProvider` seam interface — see [Load balancing](#load-balancing). Depends only on `virtualization-core`; no backend dependency. |
 | `virtualization-proxmox` | `VirtualizationProvider` for Proxmox VE, over its HTTPS REST API (API token auth). No `ImageProvider` yet. |
-| `virtualization-incus` | `VirtualizationProvider` **and** `ImageProvider` for Incus, over its REST API (mutual TLS). |
+| `virtualization-incus` | `VirtualizationProvider`, `ImageProvider` **and** `StorageProvider` for Incus, over its REST API (mutual TLS). |
 | `virtualization-qemu` | `VirtualizationProvider` for a single running QEMU process, over QMP (Unix socket or TCP). No `ImageProvider`. |
+| `virtualization-caddy` | `LoadBalancerProvider` for Caddy, over its admin REST API (plain HTTP, default `localhost:2019`). Not a compute backend — implements no `virtualization-core` provider interface. |
 | `virtualization-cli` | Standalone Picocli CLI (`virtualization` command), packaged as a self-contained executable JAR. |
 | `virtualization-spring-boot-autoconfigure` | `@ConfigurationProperties` + auto-configuration wiring providers (workload and image) from YAML into Spring beans, plus an optional REST API (`.web` package, needs `spring-boot-starter-web`). |
+| `virtualization-iam-spring` | Wires `virtualization-iam`/`-iam-store` into a Spring Security filter chain gating `/api/v1/**` by permission — see [IAM & access control](#iam--access-control). A peer of `virtualization-spring-boot-autoconfigure`, not a dependency of it or vice versa. |
 | `virtualization-spring-boot-starter` | Empty starter POM pulling in the autoconfigure module, by Spring Boot convention. |
 | `virtualization-spring-security` | Optional OIDC login bridge for your application's own endpoints. Not a dependency of the base starter. |
 | `virtualization-example-spring` | Minimal runnable Spring Boot app demonstrating the starter. |
@@ -854,6 +868,355 @@ gated independently per subsystem (see [Spring Boot integration](#spring-boot-in
 There's no `POST /api/v1/domains` (domain registration) — see
 [Known limitations](#known-limitations).
 
+## IAM & access control
+
+A permission-gated control-plane layer on top of every module above — off by default everywhere
+(CLI, Spring, REST), so enabling it is opt-in and never breaks an existing deployment.
+
+### Core model (`virtualization-iam`, `io.virtualization.sdk.iam`)
+
+| Type | What it is |
+|---|---|
+| `User` / `Role` / `Group` / `ApiCredential` | Local accounts, named permission bundles, role-granting groups, and machine credentials. `User.passwordHash`/`ApiCredential.tokenHash` are the only sensitive fields — both `toString()` implementations redact them, same pattern as `CertificateMaterial`. |
+| `Permission` | A validated `resource:action` pair (e.g. `vps:create`, `domain:records:list`) — a record wrapping two strings, not an enum, so this dependency-free module never has to enumerate every resource type a future one (Projects, Network, ...) might add. `Permissions` is the fixed catalog of valid strings, one per existing CLI command/REST endpoint — a CLI command and its REST equivalent always require the identical permission. |
+| `UserManager` / `RoleManager` / `GroupManager` / `ApiCredentialManager` | One manager per aggregate, same shape as `DomainManager`/`CertificateManager` elsewhere in this SDK. |
+| `AuthorizationService` | Resolves a `User`'s effective permissions — direct role grants plus roles inherited through group membership. |
+| `PasswordHasher` | PBKDF2WithHmacSHA256, 210,000 iterations — the same parameters `virtualization-cli`'s `EncryptedFileCertificateStore` uses, reused here for the same low-entropy-secret threat model. |
+| `ApiTokens` | Random 256-bit tokens, verified by a fast SHA-256 digest rather than PBKDF2 — a high-entropy random token needs no artificial slow-hash cost, unlike a human-chosen password. |
+| `Bootstrap` | Creates a default `admin` user/role (granted every `Permissions.*` string) *and* an initial API credential for it the first time an IAM store is found completely empty, returning both the one-time password and the one-time API token for the caller to surface exactly once — never persisted in the clear, never returned again. Mints a token, not just a password, because neither the CLI nor the REST layer has any username/password login path wired up; the token is what actually gets the fresh admin in. |
+
+`virtualization-iam-store`'s `JsonFileIamStore` is the durable, file-backed implementation of all
+four repositories — one JSON file (`iam.json`) bundling users/roles/groups/API credentials
+together, since they cross-reference each other by id and a single file keeps a role deletion's
+read-modify-write atomic. Unlike every other `JsonFile*`/`InMemory*` split in this codebase (where
+Spring always defaulted to in-memory, "the process stays alive" being good enough), this is the
+first repository shipped as the real Spring **default** too — losing every account on a restart is
+a genuine defect for IAM, not an acceptable simplification.
+
+### CLI
+
+```
+virtualization --api-token <token> vps list --provider production
+```
+
+Every existing CLI command gains a `requirePermission(...)` check (a no-op unless
+`virtualization.iam.enabled: true` is set in the config file). Enabled, each command needs a
+matching permission from `Permissions`, presented via `--api-token` or the
+`VIRTUALIZATION_API_TOKEN` environment variable (preferred, for the same shell-history reason
+`--passphrase` prefers its own env var). The first enforcement-gated command run against an empty
+IAM store bootstraps the default admin and prints its one-time password *and* API token to
+**stderr** (never stdout — the token is what you actually pass to `--api-token` next). State lives
+in `iam.json`, next to `--config`, shared with any Spring instance pointed at the same file (see
+below).
+
+A second command tree, `iam user|role|group|credential`, manages the IAM model itself:
+
+```
+virtualization iam user create --username <name> --password <pass>
+virtualization iam user list                                                [--output table|json|yaml]
+virtualization iam user get            <id>                                 [--output table|json|yaml]
+virtualization iam user enable         <id>
+virtualization iam user disable        <id>
+virtualization iam user set-password   <id> --password <pass>
+virtualization iam user assign-role    <id> <role-id>
+virtualization iam user remove-role    <id> <role-id>
+
+virtualization iam role create --name <name>
+virtualization iam role list                                                [--output table|json|yaml]
+virtualization iam role get               <id>                              [--output table|json|yaml]
+virtualization iam role delete            <id>
+virtualization iam role grant-permission  <id> --permission <resource:action>
+virtualization iam role revoke-permission <id> --permission <resource:action>
+
+virtualization iam group create --name <name>
+virtualization iam group list                                               [--output table|json|yaml]
+virtualization iam group get          <id>                                  [--output table|json|yaml]
+virtualization iam group delete       <id>
+virtualization iam group add-member    <id> <user-id>
+virtualization iam group remove-member <id> <user-id>
+virtualization iam group assign-role   <id> <role-id>
+virtualization iam group remove-role   <id> <role-id>
+
+virtualization iam credential issue  --owner-id <user-id> --name <label> [--ttl-seconds <n>]
+virtualization iam credential list   --owner-id <user-id>                   [--output table|json|yaml]
+virtualization iam credential revoke <id>
+```
+
+`iam user create`/`list`/`get` never expose `passwordHash`; `iam credential issue` shows the raw
+token exactly once, in its response, and never again afterward — the same one-time-reveal contract
+`certificate export`'s private key and the bootstrap admin's own credentials already follow.
+
+### REST API
+
+`virtualization-iam-spring` (a peer of `virtualization-spring-boot-autoconfigure`, not a
+dependency of it or vice versa — add both to a web application) wires a Spring Security
+`SecurityFilterChain` scoped to `/api/v1/**`, activated by `virtualization.iam.enabled=true`:
+
+```yaml
+virtualization:
+  iam:
+    enabled: true
+    state-file: /custom/path/iam.json   # optional, default ${user.home}/.virtualization/iam.json
+```
+
+Requests authenticate via `Authorization: Bearer <token>`; missing/invalid/expired tokens get
+`401`, an authenticated-but-under-permissioned request gets `403`, matching the same distinction
+`RestExceptionHandler` already draws elsewhere in this SDK for
+`AuthenticationException`/`AuthorizationException`. A `PermissionExpandingAuthenticationFilter`
+additionally expands *any* already-authenticated request's `ROLE_x`-shaped authorities (however
+they got there — an OIDC login via the optional `virtualization-spring-security` module's own
+`ClaimsToRoleMapper`, or anything else) with a matching `Role`'s permissions, without this module
+ever depending on how those roles were derived.
+
+`/api/v1/iam/*` manages the model itself — same operations as the `iam` CLI tree above, same
+`UserView`/`RoleView`/`GroupView`/`ApiCredentialView` DTOs stripping `passwordHash`/`tokenHash`
+before serialization:
+
+| Method & path | |
+|---|---|
+| `GET /api/v1/iam/users` / `POST /api/v1/iam/users` | list / create, body `{"username","password"}` |
+| `GET /api/v1/iam/users/{id}` | get |
+| `POST /api/v1/iam/users/{id}/{enable,disable}` | |
+| `POST /api/v1/iam/users/{id}/password` | body `{"password"}` |
+| `PUT`/`DELETE /api/v1/iam/users/{id}/roles/{roleId}` | assign / remove |
+| `GET`/`POST /api/v1/iam/roles` | list / create, body `{"name"}` |
+| `GET`/`DELETE /api/v1/iam/roles/{id}` | get / delete |
+| `POST /api/v1/iam/roles/{id}/permissions/{grant,revoke}` | body `{"permission"}` |
+| `GET`/`POST /api/v1/iam/groups` | list / create, body `{"name"}` |
+| `GET`/`DELETE /api/v1/iam/groups/{id}` | get / delete |
+| `POST`/`DELETE /api/v1/iam/groups/{id}/members/{userId}` | add / remove |
+| `POST`/`DELETE /api/v1/iam/groups/{id}/roles/{roleId}` | assign / remove |
+| `POST /api/v1/iam/credentials` | issue, body `{"ownerId","name","ttlSeconds"}`, returns the raw token once |
+| `GET /api/v1/iam/credentials?ownerId=<id>` | list |
+| `DELETE /api/v1/iam/credentials/{id}` | revoke |
+
+## Projects
+
+`virtualization-project` is a standalone tenancy model — `Project(id, name, description,
+createdAt)` behind `ProjectManager` (create/get/list/delete only). It exists as its own
+independent, unreferenced resource: nothing in this SDK scopes a VPS, domain, certificate, or IAM
+entity to a `ProjectId` yet. Threading project scoping through the rest of the resource model is
+deliberately deferred, separate future work — this increment ships the tenancy primitive on its
+own, not the redesign.
+
+Unlike IAM, Projects have no `enabled` flag gating them off by default — `ProjectAutoConfiguration`
+always registers an in-memory `ProjectManager` (same "always created, possibly empty" stance as
+`ProviderRegistry`), and the CLI always has a `project` command tree. This also means the default
+store is **in-memory**, not durable — consistent with the pre-IAM precedent for VPS/domain/
+certificate state (losing project metadata on restart is inconvenient, not a lockout, unlike
+losing IAM accounts).
+
+CLI:
+
+```
+virtualization project list
+virtualization project create --name <name> [--description <text>]
+virtualization project get <id>
+virtualization project delete <id>
+```
+
+Each command requires the matching `project:list`/`project:create`/`project:get`/`project:delete`
+permission when IAM enforcement is enabled — see [IAM & access control](#iam--access-control).
+
+REST (`/api/v1/projects`, permission-gated the same way, no separate enabled flag):
+
+| Method & path | |
+|---|---|
+| `GET`/`POST /api/v1/projects` | list / create, body `{"name","description"}` |
+| `GET`/`DELETE /api/v1/projects/{id}` | get / delete |
+
+## Network, IPAM & firewall
+
+`virtualization-network` is a provider-neutral network/IPAM/firewall model, wired into
+[VPS provisioning](#domain-dns--certificate-management)'s `VpsProvisioningService`
+(auto-assigning an IP at create time), unlike Projects which remains standalone/unreferenced:
+
+- **`Network`** (`id, name, description, createdAt`) — a named grouping of subnets and firewall
+  rules. Two different networks may legitimately reuse the same CIDR range (they're isolated L2
+  domains), so `Subnet` overlap is only rejected *within* a network, never across networks.
+- **`Subnet`** (`id, networkId, cidr, gateway, createdAt`) — a CIDR block, validated at
+  construction. `gateway` (if set) must fall inside the CIDR and is excluded from allocation.
+- **`IpamService`** — `allocate(subnetId, ownerRef)` walks the subnet's usable host range (real
+  IPv4 bit-math, not a string range: excludes the network and broadcast addresses, RFC 3021-aware
+  for `/31`, a single address for `/32`) and hands out the first free one; `release(id)` is
+  idempotent. IPv6 subnets can be created and stored, but `allocate` throws
+  `UnsupportedOperationException` for them — iterating a `/64`-or-larger address space isn't
+  practical.
+- **`FirewallRule`** (`direction, protocol, portRangeStart/End, cidr, action, priority`) —
+  scoped to a `Network`. **Modeled only**: no provider (Proxmox/Incus) in this SDK enforces these
+  rules yet, the same "mapped in the domain model, no interface method yet" status this SDK
+  already accepts for Proxmox LXC containers and Incus networks/storage/snapshots.
+
+Unlike Projects, the default store is **durable**, not in-memory (`virtualization-network-store`'s
+`JsonFileNetworkStore`, the Spring default) — losing allocation state on restart risks IPAM handing
+out an address already live on a running VPS, a real conflict rather than merely inconvenient
+state loss (the same reasoning `virtualization-iam-store` applies to IAM state). Like Projects,
+there's no `virtualization.network.enabled` flag — a network needs no upstream provider
+configuration to make sense, so it's always registered.
+
+**VPS provisioning wiring**: `VpsProvisioningService` gained a 4th, additive constructor parameter
+(`IpamService`) and a `provision(spec, profile, subnetId)` overload — it allocates an IP from
+`subnetId`, injects it into the spec's `NetworkConfiguration` (via the new `VpsSpec.Builder.from`
+copy-builder in `virtualization-vps`), then provisions as normal. The allocation is released if
+VPS creation itself fails; it is **not** released if a later DNS/certificate step fails, since the
+VPS (and its IP) already exists by then. This wiring is at the `VpsProvisioningService` library
+level, not the plain `vps create` CLI/REST command — `VpsProvisioningService` itself isn't
+CLI/REST-exposed yet either way (a pre-existing gap, unrelated to this increment).
+
+CLI:
+
+```
+virtualization network list
+virtualization network create --name <name> [--description <text>]
+virtualization network get <id>
+virtualization network delete <id>
+
+virtualization subnet create --network <id> --cidr <cidr> [--gateway <ip>]
+virtualization subnet list --network <id>
+virtualization subnet get <id>
+virtualization subnet delete <id>
+
+virtualization ip allocate --subnet <id> [--owner <ref>]
+virtualization ip release <id>
+virtualization ip list --subnet <id>
+
+virtualization firewall-rule create --network <id> --direction <INBOUND|OUTBOUND> --protocol <TCP|UDP|ICMP|ANY> [--port-range <start>-<end>] --cidr <cidr> --action <ALLOW|DENY> [--priority <n>]
+virtualization firewall-rule list --network <id>
+virtualization firewall-rule delete <id>
+```
+
+Each command requires the matching `network:*`/`network:subnets:*`/`network:ips:*`/
+`network:firewall-rules:*` permission when IAM enforcement is enabled — see
+[IAM & access control](#iam--access-control).
+
+REST (permission-gated the same way, no separate enabled flag):
+
+| Method & path | |
+|---|---|
+| `GET`/`POST /api/v1/networks` | list / create, body `{"name","description"}` |
+| `GET`/`DELETE /api/v1/networks/{id}` | get / delete |
+| `GET`/`POST /api/v1/networks/{networkId}/subnets` | list / create, body `{"cidr","gateway"}` |
+| `GET`/`DELETE /api/v1/networks/{networkId}/subnets/{id}` | get / delete |
+| `GET`/`POST /api/v1/networks/{networkId}/subnets/{subnetId}/ips` | list / allocate, body `{"ownerRef"}` |
+| `DELETE /api/v1/networks/{networkId}/subnets/{subnetId}/ips/{id}` | release |
+| `GET`/`POST /api/v1/networks/{networkId}/firewall-rules` | list / create |
+| `DELETE /api/v1/networks/{networkId}/firewall-rules/{id}` | delete |
+
+## Storage
+
+`virtualization-storage` is provider-scoped, unlike Network/Project/IAM — it's a thin,
+provider-neutral `StorageProvider` seam (`StoragePool`/`Volume`/`VolumeSnapshot`) with exactly one
+real implementation today, `IncusStorageProvider` (in `virtualization-incus`), talking to Incus's
+real `/1.0/storage-pools` REST API. `--provider`/`?provider=` selects which configured backend to
+use, the same role it already plays for `vm`/`image`/`vps`.
+
+- **Storage pools are read-only** (list/get only) — pool lifecycle (create/delete) stays an
+  infrastructure-admin operation done directly against the backend (`incus storage create`), since
+  pool drivers (zfs/btrfs/dir/lvm/ceph, ...) have wildly different config requirements this SDK
+  has no way to validate.
+- **Only `custom` volumes are created** by this SDK — `Volume.type()` still models the backend's
+  other volume kinds (`container`/`virtual-machine`/`image`) for read-fidelity when listing a
+  pool's volumes, which may include instance-owned ones.
+- **Volume snapshots** are fully supported: create/list/restore/delete. Incus's real restore
+  mechanism is a `PUT` on the volume with a `restore` field, not a call on the snapshot —
+  `IncusStorageProvider` follows that shape.
+- `Volume.size()` is a raw backend size string (e.g. `"10GB"`), not a structured type — Incus
+  itself only ever treats it as an opaque, suffix-parsed string.
+- No "attach a volume to a running VPS" verb — `vps create`'s existing `--storage-pool`/
+  `--volume-type` options already cover root-disk placement at create time (unrelated machinery,
+  untouched by this module); a live-attach operation would need to touch
+  `virtualization-vps`/`IncusProvider`'s instance-update path, not implemented.
+
+CLI:
+
+```
+virtualization storage-pool list --provider <name>
+virtualization storage-pool get <name> --provider <name>
+
+virtualization volume list --pool <pool> --provider <name>
+virtualization volume get <name> --pool <pool> --provider <name>
+virtualization volume create <name> --pool <pool> --provider <name> [--content-type filesystem|block] [--size <size>]
+virtualization volume delete <name> --pool <pool> --provider <name>
+virtualization volume resize <name> --pool <pool> --provider <name> --size <size>
+
+virtualization volume snapshot list --volume <name> --pool <pool> --provider <name>
+virtualization volume snapshot create <snapshot-name> --volume <name> --pool <pool> --provider <name>
+virtualization volume snapshot restore <snapshot-name> --volume <name> --pool <pool> --provider <name>
+virtualization volume snapshot delete <snapshot-name> --volume <name> --pool <pool> --provider <name>
+```
+
+Each command requires the matching `storage:pools:*`/`storage:volumes:*` permission when IAM
+enforcement is enabled — see [IAM & access control](#iam--access-control).
+
+REST (permission-gated the same way, no separate enabled flag — availability is purely a function
+of whether the selected `?provider=` implements `StorageProvider`):
+
+| Method & path | |
+|---|---|
+| `GET /api/v1/storage/pools?provider=x` | list |
+| `GET /api/v1/storage/pools/{pool}?provider=x` | get |
+| `GET`/`POST /api/v1/storage/pools/{pool}/volumes?provider=x` | list / create, body `{"name","contentType","size","config"}` |
+| `GET`/`DELETE /api/v1/storage/pools/{pool}/volumes/{name}?provider=x` | get / delete |
+| `POST /api/v1/storage/pools/{pool}/volumes/{name}/resize?provider=x` | resize, body `{"size"}` |
+| `GET`/`POST /api/v1/storage/pools/{pool}/volumes/{name}/snapshots?provider=x` | list / create, body `{"name"}` |
+| `POST /api/v1/storage/pools/{pool}/volumes/{name}/snapshots/{snapshot}/restore?provider=x` | restore |
+| `DELETE /api/v1/storage/pools/{pool}/volumes/{name}/snapshots/{snapshot}?provider=x` | delete |
+
+## Load balancing
+
+`virtualization-loadbalancer` is provider-scoped like Storage, not SDK-internal bookkeeping like
+Network/Project/IAM — a thin `LoadBalancerProvider` seam with one real implementation,
+`CaddyLoadBalancerProvider` (in `virtualization-caddy`), talking to
+[Caddy](https://caddyserver.com)'s real admin REST API (JSON over HTTP, default
+`http://localhost:2019`, no auth on loopback by default). `--provider`/`?provider=` selects which
+configured load balancer backend to use — a **separate namespace** from the VM/storage
+`--provider` (resolved against `virtualization.loadbalancers.providers.*`, not
+`virtualization.providers.*`, since Caddy isn't a compute/image/storage backend), even though the
+flag name is reused.
+
+- **One `LoadBalancer` = one Caddy HTTP server** (`apps.http.servers.<name>`) — a set of listen
+  addresses (`:443`, ...) fronting host-matched `Route`s. `LoadBalancer.name()` is the identifier;
+  no separate generated id, matching `StoragePool`'s name-keyed shape.
+- **One `Route` = one virtual-host reverse-proxy rule** within a load balancer: requests matching
+  `Host: <host>` are proxied across a list of `Backend`s (`host:port` upstreams). Updating a
+  route's backends (`route update`) replaces the list wholesale — no separate add/remove-backend
+  operations.
+- **Full config ownership, not incremental patching**: every mutating call reads the whole current
+  Caddy config, mutates it in memory, and `POST /load`s the entire document back (Caddy validates
+  and atomically swaps it). This assumes the provider is the **sole owner** of the target Caddy
+  instance's config — the same "don't try to coexist with hand-edited state" stance `JsonFile*`
+  stores take elsewhere in this SDK, not a general-purpose Caddy config editor.
+- **Standalone** — nothing in `VpsProvisioningService`/`VpsProvisioningProfile` changed. A VPS is
+  added to a load balancer's backend pool as an explicit separate step, the same way Network/
+  Storage resources are managed independently of provisioning.
+
+CLI:
+
+```
+virtualization load-balancer list --provider <name>
+virtualization load-balancer create <name> --listen <addr> [--listen <addr> ...] --provider <name>
+virtualization load-balancer get <name> --provider <name>
+virtualization load-balancer delete <name> --provider <name>
+
+virtualization route list --load-balancer <name> --provider <name>
+virtualization route create <host> --load-balancer <name> --backend <host:port> [--backend <host:port> ...] [--health-check-path <path> --health-check-interval <seconds> --health-check-timeout <seconds>] --provider <name>
+virtualization route get <host> --load-balancer <name> --provider <name>
+virtualization route update <host> --load-balancer <name> --backend <host:port> [...] [health-check opts] --provider <name>
+virtualization route delete <host> --load-balancer <name> --provider <name>
+```
+
+Each command requires the matching `loadbalancer:*`/`loadbalancer:routes:*` permission when IAM
+enforcement is enabled — see [IAM & access control](#iam--access-control).
+
+REST (permission-gated the same way, no separate enabled flag):
+
+| Method & path | |
+|---|---|
+| `GET`/`POST /api/v1/load-balancers?provider=x` | list / create, body `{"name","listenAddresses"}` |
+| `GET`/`DELETE /api/v1/load-balancers/{name}?provider=x` | get / delete |
+| `GET`/`POST /api/v1/load-balancers/{name}/routes?provider=x` | list / create, body `{"host","backends","healthCheck"}` |
+| `GET`/`PUT`/`DELETE /api/v1/load-balancers/{name}/routes/{host}?provider=x` | get / replace / delete |
+
 ## Extension guide
 
 **Adding a new provider module** (e.g. `virtualization-vsphere`):
@@ -913,7 +1276,7 @@ throw `UnsupportedCapabilityException` unless overridden). Wire it into `ConfigL
 ./mvnw clean verify
 ```
 
-runs the full suite — 475+ tests, no external services:
+runs the full suite — 740+ tests, no external services:
 
 - **Core**: domain model validation, provider registry, capability enforcement, `Operation`
   lifecycle (progress bounds, completion, failure, timeout), plus the image-management model
@@ -973,6 +1336,53 @@ runs the full suite — 475+ tests, no external services:
   `/api/v1/domains`/`/api/v1/certificates` end to end) — the latter is what caught a routing bug (a
   multi-segment `{id}` needs Spring's `{*id}` capture syntax, not `{id:.+}`) and a binding bug
   (`-parameters` javac flag) that the unit tests alone did not.
+- **IAM**: `PasswordHasher`/`ApiTokens` round-trip and rejection behavior; `DefaultAuthorizationService`
+  direct-grant/group-inherited-grant/revoked-role/disabled-user cases; `DefaultGroupManager`
+  keeping `Group.members`/`User.groups` in sync in both directions; `Bootstrap`'s empty-store-only
+  admin+role+API-credential creation; `JsonFileIamStore`'s cross-instance persistence for all four
+  aggregates in one shared file; a real embedded-Tomcat `SecurityFilterChain` integration test
+  (`401` with no token, `403` under-permissioned, security-cleared-through-to-a-real-`404`
+  correctly-permissioned, and the `anyRequest().authenticated()` catch-all for a path outside the
+  fixed permission catalog); a second embedded-Tomcat suite exercising the full `/api/v1/iam/*`
+  management loop end to end (create a role, grant it a permission, create a user, assign the role,
+  issue that user a credential, confirm the *freshly issued* token authenticates with exactly the
+  granted permission and stops working the moment the user is disabled — and the same for a
+  permission granted only through group membership); CLI coverage proving enforcement stays off by
+  default, an empty store bootstraps and prints its one-time password *and* API token to stderr,
+  the `iam user/role/group/credential` command tree mirrors that same end-to-end loop across
+  separate `execute()` calls, and a token minted directly against the CLI's own `iam.json`
+  authenticates successfully in a *separate* `execute()` call.
+- **Projects**: `DefaultProjectManager` create/get/list/delete plus duplicate-name rejection;
+  `ProjectController` unit tests; CLI `project` command coverage across *separate* `execute()`
+  calls, proving `JsonFileProjectRepository` bridges CLI invocations the same way VPS/domain state
+  does.
+- **Network, IPAM & firewall**: `CidrBlock` IPv4 math (valid/invalid CIDR parsing, contains/
+  overlaps, usable-host enumeration excluding network/broadcast/gateway, `/31` RFC-3021 and `/32`
+  single-address edge cases, IPv6 operations throwing `UnsupportedOperationException`);
+  `DefaultSubnetManager` overlap rejection (same network vs. different network); `DefaultIpamService`
+  (allocate/release/re-allocate-after-release/exhausted-subnet/double-release-is-a-no-op/IPv6-throws);
+  `DefaultFirewallRuleManager` port-range validation; `JsonFileNetworkStore` cross-instance
+  persistence for all four aggregates; `VpsSpec.Builder.from` round-trip equality across every
+  field; `VpsProvisioningService`'s subnet-aware `provision` overload (allocated IP flows into the
+  created `Vps`, release-on-VPS-creation-failure, no-release-on-downstream-DNS/certificate-failure,
+  conflicting-static-IP rejection, no-IpamService-configured rejection) proven without disturbing
+  any of the module's existing (unmodified, still-passing) provisioning tests; CLI `network`/
+  `subnet`/`ip`/`firewall-rule` command coverage across *separate* `execute()` calls; Spring
+  controller unit tests for all four REST resources.
+- **Storage**: `IncusStorageProviderTest` against an extended `FakeIncusServer` (new in-memory
+  pool/volume/snapshot state and routes) — pools list/get (incl. unknown-pool →
+  `ResourceNotFoundException`), volume create/get/list/delete, resize (proves the
+  get-then-merge-then-put path preserves other config keys), snapshot create/list/restore/delete;
+  light record-validation tests in `virtualization-storage` itself; CLI `storage-pool`/`volume`/
+  `volume snapshot` command coverage and Spring controller unit tests, both against a hand-written
+  in-memory `FakeStorageProvider` (not `FakeIncusServer` — CLI/Spring tests never talk HTTP).
+- **Load balancing**: `CaddyLoadBalancerProviderTest` against a new `FakeCaddyServer` (in-memory
+  `GET /config/` / `POST /load`) — create/get/list/delete load balancer, create/get/list/update/
+  delete route, duplicate-name rejection, unknown-load-balancer/unknown-route →
+  `ResourceNotFoundException`, a round-trip proof that `updateRoute` fully replaces the backend
+  list rather than merging it; light record-validation tests in `virtualization-loadbalancer`
+  itself; CLI `load-balancer`/`route` command coverage and Spring controller unit tests, both
+  against a hand-written in-memory `FakeLoadBalancerProvider`.
 
 Real-backend integration tests are out of scope for this SDK's default build, by design (section
 19 of the original spec) — every provider module's tests exercise the real wire protocol, just
@@ -1041,3 +1451,62 @@ against a fake implementation of the other end.
   decrypting with the old one and re-encrypting with the new one yourself, no dedicated command for
   it. `DnsRecordType` covers `A`/`AAAA`/`CNAME`/`TXT`/`MX` only — no `NS`/`SRV`. `ChallengeType`
   names `HTTP_01` but no provider implements it.
+- **IAM**: permissions are resource+action scoped only, not yet project-scoped — `Project` now
+  exists (see [Projects](#projects)) but no permission, role, or credential references a
+  `ProjectId`; every IAM check is still global. `JsonFileIamStore` has the same
+  in-process-lock-only, no-OS-file-locking tradeoff every other
+  `JsonFile*` repository in this codebase accepts, sharpened slightly here since a long-lived
+  Spring process and CLI invocations can now genuinely race on the same file rather than just
+  CLI-vs-CLI. `iam user set-password` needs a working, already-permissioned credential to call in
+  the first place — if an operator loses *every* admin credential (both the bootstrap password and
+  its API token), there's no recovery path short of deleting `iam.json` and re-bootstrapping (which
+  discards every other user, role, and group too) or writing a small program directly against
+  `UserRepository`/`RoleRepository`. `iam group add-member`/`remove-member` keep both sides of the
+  membership relationship in sync (`Group.members` and `User.groups`) — a real bug caught by this
+  increment's own end-to-end tests, not a known gap, but worth knowing if a caller ever constructs
+  a `Group`/`User` directly instead of through `GroupManager`. The OIDC bridge
+  (`PermissionExpandingAuthenticationFilter`) expands *any* already-resolved `ROLE_x` authority
+  whose name happens to match a `Role`, from any source — it has no way to distinguish "this role
+  came from a trusted OIDC claims mapping" from "this role name coincidentally matches," which is
+  fine when the only other authority source is this module's own token filter, but worth knowing
+  if a future integration adds a third, less-trusted authority source into the same chain.
+- **Projects**: `Project` is a standalone, unreferenced resource — no VPS, domain, certificate,
+  DNS record, or IAM entity carries a `ProjectId` yet, so it groups nothing in practice today.
+  Threading project scoping through the rest of the resource model is deliberately deferred,
+  separate future work. The Spring default store is in-memory (`InMemoryProjectRepository`), so
+  project metadata doesn't survive a restart unless a caller supplies their own durable
+  `ProjectRepository` bean.
+- **Network, IPAM & firewall**: `FirewallRule` is a rule *catalog* only — no provider in this SDK
+  enforces it against a real Incus ACL profile or Proxmox firewall API, the same status this SDK
+  already accepts for Proxmox LXC containers and Incus networks/storage/snapshots. IPAM allocation
+  is IPv4-only; an IPv6 `Subnet` can be created and stored but `IpamService.allocate` throws
+  `UnsupportedOperationException` for it — iterating a `/64`-or-larger address space isn't
+  practical. `IpamService.allocate` picks the *first* free address by linear scan, not the least-
+  recently-used one — fine at homelab/small-network scale, not optimized for a heavily
+  churned large subnet. VPS provisioning's subnet wiring lives on `VpsProvisioningService`
+  specifically, not the plain `vps create` CLI/REST command — that service itself isn't
+  CLI/REST-exposed yet either way, a pre-existing gap this increment didn't change. `Network` is
+  not `ProjectId`-scoped, the same gap the IAM bullet above already discloses for every resource in
+  this SDK.
+- **Storage**: Incus-only — Proxmox and QEMU don't implement `StorageProvider` yet. Storage pools
+  are read-only (list/get); pool creation stays an infrastructure-admin operation done directly
+  against the backend. Only `custom` volumes are created by this SDK. No live-attach-to-a-running-
+  VPS verb — `vps create`'s existing `--storage-pool`/`--volume-type` options cover root-disk
+  placement at create time only. `IncusStorageProvider`'s wire-format assumptions (JSON field
+  names, sync-vs-async operation semantics for storage-pool/volume/snapshot calls) are based on
+  general Incus/LXD REST API knowledge, not verified against a live server — the same "tested
+  against a fake, never a real backend" policy every other provider module in this SDK already
+  accepts.
+- **Load balancing**: Caddy-only — Traefik/HAProxy/Envoy aren't implemented. The provider assumes
+  it is the **sole owner** of the target Caddy instance's config: every mutation reads the whole
+  document, edits it in memory, and `POST /load`s it back, so a Caddy instance with config from
+  another source (hand-edited, another tool) will have that config silently overwritten on the
+  next call — not a general-purpose Caddy config editor. Standalone, like Storage — nothing in
+  `VpsProvisioningService`/`VpsProvisioningProfile` references load balancing; a VPS is added to a
+  backend pool as an explicit separate step. `CaddyLoadBalancerProvider`'s wire-format assumptions
+  (the exact JSON shape under `apps.http.servers`) are based on Caddy's documented JSON config
+  structure, not verified against a live instance — same disclosed-assumption policy as Storage's
+  Incus client. Health-check durations are formatted as whole seconds only, not a general
+  duration-string parser. `Backend` dial-address parsing (`host:port`, split on the last `:`)
+  doesn't handle raw IPv6 literals correctly — a homelab/hostname-focused scope, not a general URI
+  parser.

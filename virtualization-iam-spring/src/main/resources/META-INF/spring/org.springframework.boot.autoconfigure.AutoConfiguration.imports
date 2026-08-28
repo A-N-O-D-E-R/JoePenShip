@@ -1,0 +1,2 @@
+io.virtualization.sdk.spring.iam.IamAutoConfiguration
+io.virtualization.sdk.spring.iam.web.IamWebAutoConfiguration

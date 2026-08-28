@@ -35,12 +35,22 @@ public final class FakeIncusServer implements AutoCloseable {
     private static final Pattern IMAGE_ALIAS_PATH = Pattern.compile("/1.0/images/aliases/(.+)");
     private static final Pattern IMAGE_EXPORT_PATH = Pattern.compile("/1.0/images/([^/?]+)/export");
     private static final Pattern IMAGE_PATH = Pattern.compile("/1.0/images/([^/?]+)");
+    private static final Pattern STORAGE_VOLUME_SNAPSHOT_PATH =
+            Pattern.compile("/1.0/storage-pools/([^/?]+)/volumes/custom/([^/?]+)/snapshots/([^/?]+)");
+    private static final Pattern STORAGE_VOLUME_SNAPSHOTS_PATH =
+            Pattern.compile("/1.0/storage-pools/([^/?]+)/volumes/custom/([^/?]+)/snapshots");
+    private static final Pattern STORAGE_VOLUME_PATH = Pattern.compile("/1.0/storage-pools/([^/?]+)/volumes/custom/([^/?]+)");
+    private static final Pattern STORAGE_POOL_VOLUMES_PATH = Pattern.compile("/1.0/storage-pools/([^/?]+)/volumes");
+    private static final Pattern STORAGE_POOL_PATH = Pattern.compile("/1.0/storage-pools/([^/?]+)");
 
     private final ObjectMapper mapper = new ObjectMapper();
     private final HttpServer server;
     private final Map<String, InstanceState> instances = new ConcurrentHashMap<>();
     private final Map<String, OperationState> operations = new ConcurrentHashMap<>();
     private final Map<String, ImageState> images = new ConcurrentHashMap<>();
+    private final Map<String, PoolState> pools = new ConcurrentHashMap<>();
+    private final Map<String, VolumeState> volumes = new ConcurrentHashMap<>();
+    private final Map<String, List<SnapshotState>> snapshots = new ConcurrentHashMap<>();
     private final AtomicLong operationSequence = new AtomicLong();
     private volatile int pollsBeforeCompletion = 0;
     private volatile boolean nextOperationFails = false;
@@ -56,6 +66,7 @@ public final class FakeIncusServer implements AutoCloseable {
             throw new IllegalStateException("Failed to bind fake Incus server", e);
         }
         server.createContext("/1.0/", this::handle);
+        pools.put("default", new PoolState("dir", "", Map.of(), "Created"));
     }
 
     public FakeIncusServer start() {
@@ -87,6 +98,10 @@ public final class FakeIncusServer implements AutoCloseable {
             String fingerprint, String type, String architecture, Map<String, String> properties, long size,
             String createdAt, List<String> aliasNames) {
         images.put(fingerprint, new ImageState(type, architecture, properties, size, createdAt, aliasNames));
+    }
+
+    public void addStoragePool(String name, String driver, String description, Map<String, String> config, String status) {
+        pools.put(name, new PoolState(driver, description, config, status));
     }
 
     /** Sets the {@code download_progress} text reported on each poll of the next pull operation while it runs. */
@@ -200,7 +215,203 @@ public final class FakeIncusServer implements AutoCloseable {
             return;
         }
 
+        Matcher snapshotItem = STORAGE_VOLUME_SNAPSHOT_PATH.matcher(path);
+        if ("DELETE".equals(method) && snapshotItem.matches()) {
+            handleSnapshotDelete(exchange, volumeKey(snapshotItem.group(1), snapshotItem.group(2)), snapshotItem.group(3));
+            return;
+        }
+
+        Matcher snapshotList = STORAGE_VOLUME_SNAPSHOTS_PATH.matcher(path);
+        if ("GET".equals(method) && snapshotList.matches()) {
+            handleSnapshotsList(exchange, volumeKey(snapshotList.group(1), snapshotList.group(2)));
+            return;
+        }
+        if ("POST".equals(method) && snapshotList.matches()) {
+            handleSnapshotCreate(exchange, volumeKey(snapshotList.group(1), snapshotList.group(2)));
+            return;
+        }
+
+        Matcher volumeItem = STORAGE_VOLUME_PATH.matcher(path);
+        if ("GET".equals(method) && volumeItem.matches()) {
+            handleVolumeGet(exchange, volumeKey(volumeItem.group(1), volumeItem.group(2)));
+            return;
+        }
+        if ("DELETE".equals(method) && volumeItem.matches()) {
+            handleVolumeDelete(exchange, volumeKey(volumeItem.group(1), volumeItem.group(2)));
+            return;
+        }
+        if ("PUT".equals(method) && volumeItem.matches()) {
+            handleVolumePut(exchange, volumeKey(volumeItem.group(1), volumeItem.group(2)));
+            return;
+        }
+
+        Matcher poolVolumes = STORAGE_POOL_VOLUMES_PATH.matcher(path);
+        if ("GET".equals(method) && poolVolumes.matches()) {
+            handleVolumesList(exchange, poolVolumes.group(1));
+            return;
+        }
+        if ("POST".equals(method) && poolVolumes.matches()) {
+            handleVolumeCreate(exchange, poolVolumes.group(1));
+            return;
+        }
+
+        if ("GET".equals(method) && path.equals("/1.0/storage-pools")) {
+            List<Map<String, Object>> body = new ArrayList<>();
+            pools.forEach((name, pool) -> body.add(toPoolJson(name, pool)));
+            sendEnvelope(exchange, 200, "sync", body);
+            return;
+        }
+
+        Matcher poolItem = STORAGE_POOL_PATH.matcher(path);
+        if ("GET".equals(method) && poolItem.matches()) {
+            PoolState found = pools.get(poolItem.group(1));
+            if (found == null) {
+                sendEnvelope(exchange, 404, "error", null);
+                return;
+            }
+            sendEnvelope(exchange, 200, "sync", toPoolJson(poolItem.group(1), found));
+            return;
+        }
+
         sendEnvelope(exchange, 404, "error", null);
+    }
+
+    private static String volumeKey(String pool, String name) {
+        return pool + "/custom/" + name;
+    }
+
+    @SuppressWarnings("unchecked")
+    private void handleVolumeCreate(HttpExchange exchange, String pool) throws IOException {
+        if (!pools.containsKey(pool)) {
+            sendEnvelope(exchange, 404, "error", null);
+            return;
+        }
+        byte[] body = exchange.getRequestBody().readAllBytes();
+        Map<String, Object> parsed = mapper.readValue(body, Map.class);
+        String name = (String) parsed.get("name");
+        String contentType = (String) parsed.getOrDefault("content_type", "filesystem");
+        Map<String, String> config = (Map<String, String>) parsed.getOrDefault("config", Map.of());
+        volumes.put(volumeKey(pool, name), new VolumeState(pool, name, "custom", contentType, new LinkedHashMap<>(config)));
+
+        sendOperationCreatedEnvelope(exchange, createOperation(null, null));
+    }
+
+    private void handleVolumeGet(HttpExchange exchange, String key) throws IOException {
+        VolumeState found = volumes.get(key);
+        if (found == null) {
+            sendEnvelope(exchange, 404, "error", null);
+            return;
+        }
+        sendEnvelope(exchange, 200, "sync", toVolumeJson(found));
+    }
+
+    private void handleVolumesList(HttpExchange exchange, String pool) throws IOException {
+        if (!pools.containsKey(pool)) {
+            sendEnvelope(exchange, 404, "error", null);
+            return;
+        }
+        List<Map<String, Object>> body = new ArrayList<>();
+        volumes.values().stream().filter(v -> v.pool.equals(pool)).forEach(v -> body.add(toVolumeJson(v)));
+        sendEnvelope(exchange, 200, "sync", body);
+    }
+
+    private void handleVolumeDelete(HttpExchange exchange, String key) throws IOException {
+        if (!volumes.containsKey(key)) {
+            sendEnvelope(exchange, 404, "error", null);
+            return;
+        }
+        volumes.remove(key);
+        snapshots.remove(key);
+        respondWithOperation(exchange);
+    }
+
+    @SuppressWarnings("unchecked")
+    private void handleVolumePut(HttpExchange exchange, String key) throws IOException {
+        VolumeState found = volumes.get(key);
+        if (found == null) {
+            sendEnvelope(exchange, 404, "error", null);
+            return;
+        }
+        byte[] body = exchange.getRequestBody().readAllBytes();
+        Map<String, Object> parsed = mapper.readValue(body, Map.class);
+
+        if (parsed.containsKey("restore")) {
+            String snapshotName = (String) parsed.get("restore");
+            List<SnapshotState> volumeSnapshots = snapshots.getOrDefault(key, List.of());
+            boolean exists = volumeSnapshots.stream().anyMatch(s -> s.name.equals(snapshotName));
+            if (!exists) {
+                sendEnvelope(exchange, 404, "error", null);
+                return;
+            }
+            respondWithOperation(exchange);
+            return;
+        }
+
+        Map<String, String> config = (Map<String, String>) parsed.getOrDefault("config", Map.of());
+        volumes.put(key, new VolumeState(found.pool, found.name, found.type, found.contentType, new LinkedHashMap<>(config)));
+        respondWithOperation(exchange);
+    }
+
+    private void handleSnapshotsList(HttpExchange exchange, String key) throws IOException {
+        if (!volumes.containsKey(key)) {
+            sendEnvelope(exchange, 404, "error", null);
+            return;
+        }
+        List<Map<String, Object>> body = new ArrayList<>();
+        for (SnapshotState snapshot : snapshots.getOrDefault(key, List.of())) {
+            body.add(toSnapshotJson(snapshot));
+        }
+        sendEnvelope(exchange, 200, "sync", body);
+    }
+
+    @SuppressWarnings("unchecked")
+    private void handleSnapshotCreate(HttpExchange exchange, String key) throws IOException {
+        if (!volumes.containsKey(key)) {
+            sendEnvelope(exchange, 404, "error", null);
+            return;
+        }
+        byte[] body = exchange.getRequestBody().readAllBytes();
+        Map<String, Object> parsed = mapper.readValue(body, Map.class);
+        String name = (String) parsed.get("name");
+        snapshots.computeIfAbsent(key, k -> new ArrayList<>()).add(new SnapshotState(name, "2024-01-01T00:00:00Z"));
+
+        sendOperationCreatedEnvelope(exchange, createOperation(null, null));
+    }
+
+    private void handleSnapshotDelete(HttpExchange exchange, String key, String snapshotName) throws IOException {
+        List<SnapshotState> volumeSnapshots = snapshots.get(key);
+        boolean removed = volumeSnapshots != null && volumeSnapshots.removeIf(s -> s.name.equals(snapshotName));
+        if (!removed) {
+            sendEnvelope(exchange, 404, "error", null);
+            return;
+        }
+        respondWithOperation(exchange);
+    }
+
+    private static Map<String, Object> toPoolJson(String name, PoolState pool) {
+        Map<String, Object> json = new LinkedHashMap<>();
+        json.put("name", name);
+        json.put("driver", pool.driver);
+        json.put("description", pool.description);
+        json.put("config", pool.config);
+        json.put("status", pool.status);
+        return json;
+    }
+
+    private static Map<String, Object> toVolumeJson(VolumeState volume) {
+        Map<String, Object> json = new LinkedHashMap<>();
+        json.put("name", volume.name);
+        json.put("type", volume.type);
+        json.put("content_type", volume.contentType);
+        json.put("config", volume.config);
+        return json;
+    }
+
+    private static Map<String, Object> toSnapshotJson(SnapshotState snapshot) {
+        Map<String, Object> json = new LinkedHashMap<>();
+        json.put("name", snapshot.name);
+        json.put("created_at", snapshot.createdAt);
+        return json;
     }
 
     @SuppressWarnings("unchecked")
@@ -389,6 +600,12 @@ public final class FakeIncusServer implements AutoCloseable {
     private record ImageState(
             String type, String architecture, Map<String, String> properties, long size, String createdAt,
             List<String> aliasNames) {}
+
+    private record PoolState(String driver, String description, Map<String, String> config, String status) {}
+
+    private record VolumeState(String pool, String name, String type, String contentType, Map<String, String> config) {}
+
+    private record SnapshotState(String name, String createdAt) {}
 
     private static final class OperationState {
         final AtomicInteger pollsRemaining;

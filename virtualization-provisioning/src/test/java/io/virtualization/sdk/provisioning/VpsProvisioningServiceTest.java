@@ -12,6 +12,14 @@ import io.virtualization.sdk.domain.DomainManager;
 import io.virtualization.sdk.domain.InMemoryDomainRepository;
 import io.virtualization.sdk.dns.DnsProviderRegistry;
 import io.virtualization.sdk.dns.DnsZone;
+import io.virtualization.sdk.network.DefaultIpamService;
+import io.virtualization.sdk.network.DefaultNetworkManager;
+import io.virtualization.sdk.network.DefaultSubnetManager;
+import io.virtualization.sdk.network.InMemoryIpAllocationRepository;
+import io.virtualization.sdk.network.InMemoryNetworkRepository;
+import io.virtualization.sdk.network.InMemorySubnetRepository;
+import io.virtualization.sdk.network.IpamService;
+import io.virtualization.sdk.network.Subnet;
 import io.virtualization.sdk.provisioning.support.FakeAcmeProvider;
 import io.virtualization.sdk.provisioning.support.FakeDnsProvider;
 import io.virtualization.sdk.provisioning.support.FakeVpsProvisioner;
@@ -158,5 +166,71 @@ class VpsProvisioningServiceTest {
         long updateCalls = dns.calls().stream().filter(c -> c.startsWith("updateRecord:")).count();
         assertThat(createCalls).isEqualTo(1);
         assertThat(updateCalls).isEqualTo(1);
+    }
+
+    @Test
+    void subnetAwareProvisionAllocatesAnIpAndInjectsItIntoTheCreatedVps() {
+        SubnetFixture fixture = subnetFixture("10.0.0.0/29");
+        VpsProvisioningService subnetService = new VpsProvisioningService(vpsManager, domainManager, certificateManager, fixture.ipamService);
+        VpsSpec spec = specBuilder().build();
+
+        ProvisioningResult result = subnetService.provision(spec, VpsProvisioningProfile.BASIC, fixture.subnet.id());
+
+        assertThat(result.vps().network().ipv4()).isEqualTo("10.0.0.1");
+    }
+
+    @Test
+    void subnetAwareProvisionReleasesTheAllocationWhenVpsCreationFails() {
+        SubnetFixture fixture = subnetFixture("10.0.0.0/30");
+        VpsManager failingVpsManager = new DefaultVpsManager(new InMemoryVpsRepository(), FakeVpsProvisioner.failing(new OperationException("boom")));
+        VpsProvisioningService failingService = new VpsProvisioningService(failingVpsManager, domainManager, certificateManager, fixture.ipamService);
+        VpsSpec spec = specBuilder().build();
+
+        assertThatThrownBy(() -> failingService.provision(spec, VpsProvisioningProfile.BASIC, fixture.subnet.id()))
+                .isInstanceOf(OperationException.class);
+
+        assertThat(fixture.ipamService.list(fixture.subnet.id())).isEmpty();
+    }
+
+    @Test
+    void subnetAwareProvisionDoesNotReleaseTheAllocationWhenOnlyADownstreamStepFails() {
+        SubnetFixture fixture = subnetFixture("10.0.0.0/30");
+        VpsProvisioningService subnetService = new VpsProvisioningService(vpsManager, domainManager, certificateManager, fixture.ipamService);
+        VpsSpec spec = specBuilder().domains(java.util.List.of("app.example.com")).tlsEnabled(true).build();
+
+        assertThatThrownBy(() -> subnetService.provision(spec, VpsProvisioningProfile.HTTPS, fixture.subnet.id()))
+                .isInstanceOf(IllegalStateException.class);
+
+        assertThat(fixture.ipamService.list(fixture.subnet.id())).hasSize(1);
+    }
+
+    @Test
+    void subnetAwareProvisionRejectsASpecThatAlreadyHasAStaticIp() {
+        SubnetFixture fixture = subnetFixture("10.0.0.0/30");
+        VpsProvisioningService subnetService = new VpsProvisioningService(vpsManager, domainManager, certificateManager, fixture.ipamService);
+        VpsSpec spec = specBuilder().network(new NetworkConfiguration("default", "203.0.113.10", null, "web-01")).build();
+
+        assertThatThrownBy(() -> subnetService.provision(spec, VpsProvisioningProfile.BASIC, fixture.subnet.id()))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
+
+    @Test
+    void subnetAwareProvisionRequiresAnIpamServiceToHaveBeenConfigured() {
+        VpsSpec spec = specBuilder().build();
+
+        assertThatThrownBy(() -> service.provision(spec, VpsProvisioningProfile.BASIC, io.virtualization.sdk.network.SubnetId.generate()))
+                .isInstanceOf(IllegalStateException.class);
+    }
+
+    private record SubnetFixture(IpamService ipamService, Subnet subnet) {}
+
+    private static SubnetFixture subnetFixture(String cidr) {
+        InMemoryNetworkRepository networkRepository = new InMemoryNetworkRepository();
+        InMemorySubnetRepository subnetRepository = new InMemorySubnetRepository();
+        DefaultNetworkManager networkManager = new DefaultNetworkManager(networkRepository);
+        DefaultSubnetManager subnetManager = new DefaultSubnetManager(subnetRepository, networkRepository);
+        Subnet subnet = subnetManager.create(networkManager.create("public", null).id(), cidr, null);
+        IpamService ipamService = new DefaultIpamService(subnetRepository, new InMemoryIpAllocationRepository());
+        return new SubnetFixture(ipamService, subnet);
     }
 }

@@ -8,6 +8,25 @@ import io.virtualization.sdk.core.image.Image;
 import io.virtualization.sdk.dns.DnsRecord;
 import io.virtualization.sdk.dns.DnsZone;
 import io.virtualization.sdk.domain.Domain;
+import io.virtualization.sdk.iam.ApiCredential;
+import io.virtualization.sdk.iam.ApiCredentialManager;
+import io.virtualization.sdk.iam.Group;
+import io.virtualization.sdk.iam.GroupId;
+import io.virtualization.sdk.iam.Permission;
+import io.virtualization.sdk.iam.Role;
+import io.virtualization.sdk.iam.RoleId;
+import io.virtualization.sdk.iam.User;
+import io.virtualization.sdk.iam.UserId;
+import io.virtualization.sdk.loadbalancer.LoadBalancer;
+import io.virtualization.sdk.loadbalancer.Route;
+import io.virtualization.sdk.network.FirewallRule;
+import io.virtualization.sdk.network.IpAllocation;
+import io.virtualization.sdk.network.Network;
+import io.virtualization.sdk.network.Subnet;
+import io.virtualization.sdk.project.Project;
+import io.virtualization.sdk.storage.StoragePool;
+import io.virtualization.sdk.storage.Volume;
+import io.virtualization.sdk.storage.VolumeSnapshot;
 import io.virtualization.sdk.vps.Vps;
 import io.virtualization.sdk.vps.VpsState;
 import io.virtualization.sdk.vps.VpsType;
@@ -110,4 +129,96 @@ public sealed interface CliResult {
     record CertificateView(Certificate certificate) implements CliResult {}
 
     record CertificateExportResult(String id, boolean cert, boolean chain, boolean privateKey) implements CliResult {}
+
+    record IamUserList(List<IamUserView> users) implements CliResult {}
+
+    /** {@link User} minus {@code passwordHash} — never print a password hash to stdout. */
+    record IamUserView(String id, String username, List<String> roles, List<String> groups, boolean enabled, Instant createdAt)
+            implements CliResult {
+
+        public static IamUserView from(User user) {
+            return new IamUserView(
+                    user.id().value(), user.username(), user.roles().stream().map(RoleId::value).toList(),
+                    user.groups().stream().map(GroupId::value).toList(), user.enabled(), user.createdAt());
+        }
+    }
+
+    record IamRoleList(List<IamRoleView> roles) implements CliResult {}
+
+    record IamRoleView(String id, String name, List<String> permissions, Instant createdAt) implements CliResult {
+
+        public static IamRoleView from(Role role) {
+            return new IamRoleView(role.id().value(), role.name(), role.permissions().stream().map(Permission::asString).toList(), role.createdAt());
+        }
+    }
+
+    record IamGroupList(List<IamGroupView> groups) implements CliResult {}
+
+    record IamGroupView(String id, String name, List<String> roles, List<String> members, Instant createdAt) implements CliResult {
+
+        public static IamGroupView from(Group group) {
+            return new IamGroupView(
+                    group.id().value(), group.name(), group.roles().stream().map(RoleId::value).toList(),
+                    group.members().stream().map(UserId::value).toList(), group.createdAt());
+        }
+    }
+
+    record IamCredentialList(List<IamCredentialView> credentials) implements CliResult {}
+
+    /** {@link ApiCredential} minus {@code tokenHash} — never print a token hash to stdout; the raw token itself is only ever shown once, from {@link IamIssuedCredentialView}. */
+    record IamCredentialView(String id, String ownerId, String name, Instant createdAt, Instant expiresAt, Instant lastUsedAt) implements CliResult {
+
+        public static IamCredentialView from(ApiCredential credential) {
+            return new IamCredentialView(
+                    credential.id().value(), credential.ownerId().value(), credential.name(), credential.createdAt(),
+                    credential.expiresAt(), credential.lastUsedAt());
+        }
+    }
+
+    record IamIssuedCredentialView(String token, IamCredentialView credential) implements CliResult {
+
+        public static IamIssuedCredentialView from(ApiCredentialManager.IssuedApiCredential issued) {
+            return new IamIssuedCredentialView(issued.rawToken(), IamCredentialView.from(issued.credential()));
+        }
+    }
+
+    record ProjectList(List<Project> projects) implements CliResult {}
+
+    record ProjectView(Project project) implements CliResult {}
+
+    record NetworkList(List<Network> networks) implements CliResult {}
+
+    record NetworkView(Network network) implements CliResult {}
+
+    record SubnetList(List<Subnet> subnets) implements CliResult {}
+
+    record SubnetView(Subnet subnet) implements CliResult {}
+
+    record IpAllocationList(List<IpAllocation> allocations) implements CliResult {}
+
+    record IpAllocationView(IpAllocation allocation) implements CliResult {}
+
+    record FirewallRuleList(List<FirewallRule> rules) implements CliResult {}
+
+    record FirewallRuleView(FirewallRule rule) implements CliResult {}
+
+    record StoragePoolList(List<StoragePool> pools) implements CliResult {}
+
+    record StoragePoolView(StoragePool pool) implements CliResult {}
+
+    record VolumeList(List<Volume> volumes) implements CliResult {}
+
+    record VolumeView(Volume volume) implements CliResult {}
+
+    record VolumeSnapshotList(List<VolumeSnapshot> snapshots) implements CliResult {}
+
+    record VolumeSnapshotView(VolumeSnapshot snapshot) implements CliResult {}
+
+    record LoadBalancerList(List<LoadBalancer> loadBalancers) implements CliResult {}
+
+    record LoadBalancerView(LoadBalancer loadBalancer) implements CliResult {}
+
+    record RouteList(List<Route> routes) implements CliResult {}
+
+    record RouteView(Route route) implements CliResult {}
 }

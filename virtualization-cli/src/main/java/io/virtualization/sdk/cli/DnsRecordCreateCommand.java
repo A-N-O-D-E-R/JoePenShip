@@ -4,6 +4,7 @@ import io.virtualization.sdk.cli.output.CliResult;
 import io.virtualization.sdk.dns.DnsRecord;
 import io.virtualization.sdk.dns.DnsRecordSpec;
 import io.virtualization.sdk.dns.DnsRecordType;
+import io.virtualization.sdk.iam.Permissions;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
@@ -34,6 +35,7 @@ final class DnsRecordCreateCommand extends AbstractCliCommand {
 
     @Override
     public Integer call() {
+        requirePermission(Permissions.DNS_RECORDS_CREATE);
         DnsRecord record = dnsProviderRegistry().get(dnsProvider).createRecord(zone, new DnsRecordSpec(name, type, value, ttl, priority));
         outputWriter().write(new CliResult.DnsRecordView(record), out());
         return ExitCodes.OK;

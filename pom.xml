@@ -22,11 +22,23 @@
     <module>virtualization-acme-mock</module>
     <module>virtualization-provisioning</module>
     <module>virtualization-deployment</module>
+    <module>virtualization-iam</module>
+    <module>virtualization-iam-store</module>
+    <module>virtualization-project</module>
+    <module>virtualization-network</module>
+    <module>virtualization-network-store</module>
+    <module>virtualization-storage</module>
+    <module>virtualization-loadbalancer</module>
+    <module>virtualization-backup</module>
+    <module>virtualization-secrets</module>
+    <module>virtualization-secrets-file</module>
     <module>virtualization-proxmox</module>
     <module>virtualization-incus</module>
     <module>virtualization-qemu</module>
+    <module>virtualization-caddy</module>
     <module>virtualization-cli</module>
     <module>virtualization-spring-boot-autoconfigure</module>
+    <module>virtualization-iam-spring</module>
     <module>virtualization-spring-boot-starter</module>
     <module>virtualization-spring-security</module>
     <module>virtualization-example-spring</module>

@@ -13,6 +13,9 @@ import io.virtualization.sdk.dns.DnsRecord;
 import io.virtualization.sdk.dns.DnsRecordSpec;
 import io.virtualization.sdk.dns.DnsRecordType;
 import io.virtualization.sdk.dns.DnsZone;
+import io.virtualization.sdk.network.IpAllocation;
+import io.virtualization.sdk.network.IpamService;
+import io.virtualization.sdk.network.SubnetId;
 import io.virtualization.sdk.vps.CreateVpsOperation;
 import io.virtualization.sdk.vps.DnsProvisioningPolicy;
 import io.virtualization.sdk.vps.NetworkConfiguration;
@@ -44,11 +47,18 @@ public final class VpsProvisioningService {
     private final VpsManager vpsManager;
     private final DomainManager domainManager;
     private final CertificateManager certificateManager;
+    private final IpamService ipamService;
 
     public VpsProvisioningService(VpsManager vpsManager, DomainManager domainManager, CertificateManager certificateManager) {
+        this(vpsManager, domainManager, certificateManager, null);
+    }
+
+    /** @param ipamService required by {@link #provision(VpsSpec, VpsProvisioningProfile, SubnetId)}; may be {@code null} if that overload is never called. */
+    public VpsProvisioningService(VpsManager vpsManager, DomainManager domainManager, CertificateManager certificateManager, IpamService ipamService) {
         this.vpsManager = Objects.requireNonNull(vpsManager, "vpsManager must not be null");
         this.domainManager = Objects.requireNonNull(domainManager, "domainManager must not be null");
         this.certificateManager = Objects.requireNonNull(certificateManager, "certificateManager must not be null");
+        this.ipamService = ipamService;
     }
 
     public ProvisioningResult provision(VpsSpec spec, VpsProvisioningProfile profile) {
@@ -56,7 +66,46 @@ public final class VpsProvisioningService {
         Objects.requireNonNull(profile, "profile must not be null");
 
         Vps vps = createVps(spec);
+        return finishProvisioning(spec, profile, vps);
+    }
 
+    /**
+     * Allocates an IP from {@code subnetId} via the configured {@link IpamService}, injects it
+     * into {@code spec}'s {@link io.virtualization.sdk.vps.NetworkConfiguration} (via {@link
+     * VpsSpec.Builder#from}), and provisions as normal. The allocation is released if VPS creation
+     * itself fails — but **not** if a later DNS/certificate step fails, since the VPS (and its IP)
+     * already exists by then.
+     *
+     * @throws IllegalStateException if no {@link IpamService} was configured
+     * @throws IllegalArgumentException if {@code spec} already has a static {@code ipv4}/{@code ipv6}
+     */
+    public ProvisioningResult provision(VpsSpec spec, VpsProvisioningProfile profile, SubnetId subnetId) {
+        Objects.requireNonNull(spec, "spec must not be null");
+        Objects.requireNonNull(profile, "profile must not be null");
+        Objects.requireNonNull(subnetId, "subnetId must not be null");
+        if (ipamService == null) {
+            throw new IllegalStateException("no IpamService configured — use the 4-arg constructor to enable subnet-based provisioning");
+        }
+        NetworkConfiguration existing = spec.network().orElse(NetworkConfiguration.UNSPECIFIED);
+        if (existing.ipv4() != null || existing.ipv6() != null) {
+            throw new IllegalArgumentException("spec already has a static IP configured; cannot also allocate from a subnet");
+        }
+
+        IpAllocation allocation = ipamService.allocate(subnetId, spec.name());
+        NetworkConfiguration allocated = new NetworkConfiguration(existing.network(), allocation.address(), existing.ipv6(), existing.hostname());
+        VpsSpec allocatedSpec = VpsSpec.Builder.from(spec).network(allocated).build();
+
+        Vps vps;
+        try {
+            vps = createVps(allocatedSpec);
+        } catch (RuntimeException e) {
+            ipamService.release(allocation.id());
+            throw e;
+        }
+        return finishProvisioning(allocatedSpec, profile, vps);
+    }
+
+    private ProvisioningResult finishProvisioning(VpsSpec spec, VpsProvisioningProfile profile, Vps vps) {
         List<Domain> domains = List.of();
         if (profile != VpsProvisioningProfile.BASIC && !spec.domains().isEmpty() && spec.dnsPolicy() != DnsProvisioningPolicy.NONE) {
             domains = provisionDns(spec, vps);

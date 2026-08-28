@@ -1,6 +1,7 @@
 package io.virtualization.sdk.cli;
 
 import io.virtualization.sdk.cli.output.CliResult;
+import io.virtualization.sdk.iam.Permissions;
 import io.virtualization.sdk.vps.VpsId;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Parameters;
@@ -13,6 +14,7 @@ final class VpsGetCommand extends AbstractCliCommand {
 
     @Override
     public Integer call() {
+        requirePermission(Permissions.VPS_GET);
         outputWriter().write(CliResult.VpsView.from(vpsManager().get(new VpsId(id))), out());
         return ExitCodes.OK;
     }

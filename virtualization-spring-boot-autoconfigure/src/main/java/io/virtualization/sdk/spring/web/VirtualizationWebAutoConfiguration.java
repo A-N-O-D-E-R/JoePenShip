@@ -10,16 +10,19 @@ import org.springframework.web.servlet.DispatcherServlet;
 
 /**
  * Exposes the {@code /api/v1/images}, {@code /api/v1/workloads}, {@code /api/v1/vps}, {@code
- * /api/v1/domains} and {@code /api/v1/certificates} REST endpoints, when the application is a
- * servlet web app (i.e. depends on {@code spring-boot-starter-web} itself — {@code
- * virtualization-spring-boot-autoconfigure} only depends on it optionally). {@code
+ * /api/v1/domains}, {@code /api/v1/certificates}, {@code /api/v1/projects} and {@code
+ * /api/v1/networks} (plus nested subnets/ips/firewall-rules) REST endpoints, when
+ * the application is a servlet web app (i.e. depends on {@code spring-boot-starter-web} itself —
+ * {@code virtualization-spring-boot-autoconfigure} only depends on it optionally). {@code
  * VpsController}/{@code DomainController}/{@code CertificateController} are each {@code
  * @ConditionalOnBean} their respective manager — they only actually register once the matching
  * {@code virtualization.vps.provider}/{@code virtualization.domains.enabled}/{@code
  * virtualization.certificates.enabled} property is set (see {@link
  * io.virtualization.sdk.spring.VpsAutoConfiguration}/{@link
  * io.virtualization.sdk.spring.DomainAutoConfiguration}/{@link
- * io.virtualization.sdk.spring.CertificateAutoConfiguration}).
+ * io.virtualization.sdk.spring.CertificateAutoConfiguration}). {@code ProjectController} has no
+ * such gate — {@code ProjectManager} is always registered (see {@link
+ * io.virtualization.sdk.spring.ProjectAutoConfiguration}).
  *
  * <p>Registers the controllers by explicit {@link Import} rather than {@code @ComponentScan}:
  * a base-package scan here would also pick up any {@code @Configuration}/{@code @Component}
@@ -36,6 +39,8 @@ import org.springframework.web.servlet.DispatcherServlet;
 @ConditionalOnProperty(prefix = "virtualization.web", name = "enabled", havingValue = "true", matchIfMissing = true)
 @Import({
         ImageController.class, WorkloadController.class, VpsController.class, DomainController.class, CertificateController.class,
+        ProjectController.class, NetworkController.class, SubnetController.class, IpAllocationController.class, FirewallRuleController.class,
+        StoragePoolController.class, VolumeController.class, LoadBalancerController.class, RouteController.class,
         RestExceptionHandler.class
 })
 public class VirtualizationWebAutoConfiguration {}

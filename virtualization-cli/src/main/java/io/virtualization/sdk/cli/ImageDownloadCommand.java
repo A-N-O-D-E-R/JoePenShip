@@ -4,6 +4,7 @@ import io.virtualization.sdk.cli.output.CliResult;
 import io.virtualization.sdk.core.exception.ConnectionException;
 import io.virtualization.sdk.core.image.ImageDownload;
 import io.virtualization.sdk.core.image.ImageReference;
+import io.virtualization.sdk.iam.Permissions;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
@@ -24,6 +25,7 @@ final class ImageDownloadCommand extends AbstractCliCommand {
 
     @Override
     public Integer call() {
+        requirePermission(Permissions.IMAGE_DOWNLOAD);
         String providerName = requireProviderName();
         ImageReference ref = ImageReferences.parse(providerName, reference);
 

@@ -1,6 +1,7 @@
 package io.virtualization.sdk.cli;
 
 import io.virtualization.sdk.cli.output.CliResult;
+import io.virtualization.sdk.iam.Permissions;
 import picocli.CommandLine.Command;
 
 @Command(name = "list", description = "List VPSs.")
@@ -8,6 +9,7 @@ final class VpsListCommand extends AbstractCliCommand {
 
     @Override
     public Integer call() {
+        requirePermission(Permissions.VPS_LIST);
         outputWriter().write(
                 new CliResult.VpsList(vpsManager().list().stream().map(CliResult.VpsView::from).toList()), out());
         return ExitCodes.OK;

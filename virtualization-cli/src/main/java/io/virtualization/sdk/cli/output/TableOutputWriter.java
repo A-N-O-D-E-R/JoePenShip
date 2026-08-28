@@ -6,6 +6,16 @@ import io.virtualization.sdk.core.image.Image;
 import io.virtualization.sdk.dns.DnsRecord;
 import io.virtualization.sdk.dns.DnsZone;
 import io.virtualization.sdk.domain.Domain;
+import io.virtualization.sdk.loadbalancer.LoadBalancer;
+import io.virtualization.sdk.loadbalancer.Route;
+import io.virtualization.sdk.network.FirewallRule;
+import io.virtualization.sdk.network.IpAllocation;
+import io.virtualization.sdk.network.Network;
+import io.virtualization.sdk.network.Subnet;
+import io.virtualization.sdk.project.Project;
+import io.virtualization.sdk.storage.StoragePool;
+import io.virtualization.sdk.storage.Volume;
+import io.virtualization.sdk.storage.VolumeSnapshot;
 
 import java.io.PrintWriter;
 import java.util.List;
@@ -38,8 +48,216 @@ final class TableOutputWriter implements OutputWriter {
             case CliResult.CertificateList r -> writeCertificates(r.certificates(), out);
             case CliResult.CertificateView r -> writeCertificates(List.of(r.certificate()), out);
             case CliResult.CertificateExportResult r -> writeCertificateExport(r, out);
+            case CliResult.IamUserList r -> writeIamUsers(r.users(), out);
+            case CliResult.IamUserView r -> writeIamUsers(List.of(r), out);
+            case CliResult.IamRoleList r -> writeIamRoles(r.roles(), out);
+            case CliResult.IamRoleView r -> writeIamRoles(List.of(r), out);
+            case CliResult.IamGroupList r -> writeIamGroups(r.groups(), out);
+            case CliResult.IamGroupView r -> writeIamGroups(List.of(r), out);
+            case CliResult.IamCredentialList r -> writeIamCredentials(r.credentials(), out);
+            case CliResult.IamCredentialView r -> writeIamCredentials(List.of(r), out);
+            case CliResult.IamIssuedCredentialView r -> writeIamIssuedCredential(r, out);
+            case CliResult.ProjectList r -> writeProjects(r.projects(), out);
+            case CliResult.ProjectView r -> writeProjects(List.of(r.project()), out);
+            case CliResult.NetworkList r -> writeNetworks(r.networks(), out);
+            case CliResult.NetworkView r -> writeNetworks(List.of(r.network()), out);
+            case CliResult.SubnetList r -> writeSubnets(r.subnets(), out);
+            case CliResult.SubnetView r -> writeSubnets(List.of(r.subnet()), out);
+            case CliResult.IpAllocationList r -> writeIpAllocations(r.allocations(), out);
+            case CliResult.IpAllocationView r -> writeIpAllocations(List.of(r.allocation()), out);
+            case CliResult.FirewallRuleList r -> writeFirewallRules(r.rules(), out);
+            case CliResult.FirewallRuleView r -> writeFirewallRules(List.of(r.rule()), out);
+            case CliResult.StoragePoolList r -> writeStoragePools(r.pools(), out);
+            case CliResult.StoragePoolView r -> writeStoragePools(List.of(r.pool()), out);
+            case CliResult.VolumeList r -> writeVolumes(r.volumes(), out);
+            case CliResult.VolumeView r -> writeVolumes(List.of(r.volume()), out);
+            case CliResult.VolumeSnapshotList r -> writeVolumeSnapshots(r.snapshots(), out);
+            case CliResult.VolumeSnapshotView r -> writeVolumeSnapshots(List.of(r.snapshot()), out);
+            case CliResult.LoadBalancerList r -> writeLoadBalancers(r.loadBalancers(), out);
+            case CliResult.LoadBalancerView r -> writeLoadBalancers(List.of(r.loadBalancer()), out);
+            case CliResult.RouteList r -> writeRoutes(r.routes(), out);
+            case CliResult.RouteView r -> writeRoutes(List.of(r.route()), out);
         }
         out.flush();
+    }
+
+    private void writeLoadBalancers(List<LoadBalancer> loadBalancers, PrintWriter out) {
+        if (loadBalancers.isEmpty()) {
+            out.println("No load balancers.");
+            return;
+        }
+        out.printf("%-20s %s%n", "NAME", "LISTEN");
+        for (LoadBalancer loadBalancer : loadBalancers) {
+            out.printf("%-20s %s%n", loadBalancer.name(), String.join(",", loadBalancer.listenAddresses()));
+        }
+    }
+
+    private void writeRoutes(List<Route> routes, PrintWriter out) {
+        if (routes.isEmpty()) {
+            out.println("No routes.");
+            return;
+        }
+        out.printf("%-30s %-40s %s%n", "HOST", "BACKENDS", "HEALTH CHECK");
+        for (Route route : routes) {
+            String backends = route.backends().stream().map(b -> b.host() + ":" + b.port()).collect(Collectors.joining(","));
+            String healthCheck = route.healthCheck() != null ? route.healthCheck().path() : "-";
+            out.printf("%-30s %-40s %s%n", route.host(), backends, healthCheck);
+        }
+    }
+
+    private void writeStoragePools(List<StoragePool> pools, PrintWriter out) {
+        if (pools.isEmpty()) {
+            out.println("No storage pools.");
+            return;
+        }
+        out.printf("%-20s %-10s %-10s %s%n", "NAME", "DRIVER", "STATUS", "DESCRIPTION");
+        for (StoragePool pool : pools) {
+            out.printf("%-20s %-10s %-10s %s%n", pool.name(), pool.driver(), pool.status(), pool.description() != null ? pool.description() : "-");
+        }
+    }
+
+    private void writeVolumes(List<Volume> volumes, PrintWriter out) {
+        if (volumes.isEmpty()) {
+            out.println("No volumes.");
+            return;
+        }
+        out.printf("%-20s %-14s %-10s %-12s %s%n", "NAME", "POOL", "TYPE", "CONTENT TYPE", "SIZE");
+        for (Volume volume : volumes) {
+            out.printf(
+                    "%-20s %-14s %-10s %-12s %s%n", volume.name(), volume.pool(), volume.type(), volume.contentType(),
+                    volume.size() != null ? volume.size() : "-");
+        }
+    }
+
+    private void writeVolumeSnapshots(List<VolumeSnapshot> snapshots, PrintWriter out) {
+        if (snapshots.isEmpty()) {
+            out.println("No snapshots.");
+            return;
+        }
+        out.printf("%-20s %-20s %-14s %s%n", "NAME", "VOLUME", "POOL", "CREATED AT");
+        for (VolumeSnapshot snapshot : snapshots) {
+            out.printf(
+                    "%-20s %-20s %-14s %s%n", snapshot.name(), snapshot.volumeName(), snapshot.pool(),
+                    snapshot.createdAt() != null ? snapshot.createdAt() : "-");
+        }
+    }
+
+    private void writeNetworks(List<Network> networks, PrintWriter out) {
+        if (networks.isEmpty()) {
+            out.println("No networks.");
+            return;
+        }
+        out.printf("%-38s %-20s %s%n", "ID", "NAME", "DESCRIPTION");
+        for (Network network : networks) {
+            out.printf("%-38s %-20s %s%n", network.id().value(), network.name(), network.description() != null ? network.description() : "-");
+        }
+    }
+
+    private void writeSubnets(List<Subnet> subnets, PrintWriter out) {
+        if (subnets.isEmpty()) {
+            out.println("No subnets.");
+            return;
+        }
+        out.printf("%-38s %-38s %-20s %s%n", "ID", "NETWORK ID", "CIDR", "GATEWAY");
+        for (Subnet subnet : subnets) {
+            out.printf(
+                    "%-38s %-38s %-20s %s%n", subnet.id().value(), subnet.networkId().value(), subnet.cidr(),
+                    subnet.gateway() != null ? subnet.gateway() : "-");
+        }
+    }
+
+    private void writeIpAllocations(List<IpAllocation> allocations, PrintWriter out) {
+        if (allocations.isEmpty()) {
+            out.println("No IP allocations.");
+            return;
+        }
+        out.printf("%-38s %-38s %-16s %-24s %s%n", "ID", "SUBNET ID", "ADDRESS", "OWNER", "ALLOCATED AT");
+        for (IpAllocation allocation : allocations) {
+            out.printf(
+                    "%-38s %-38s %-16s %-24s %s%n", allocation.id().value(), allocation.subnetId().value(),
+                    allocation.address(), allocation.ownerRef(), allocation.allocatedAt());
+        }
+    }
+
+    private void writeFirewallRules(List<FirewallRule> rules, PrintWriter out) {
+        if (rules.isEmpty()) {
+            out.println("No firewall rules.");
+            return;
+        }
+        out.printf("%-38s %-38s %-9s %-8s %-11s %-20s %-6s %s%n", "ID", "NETWORK ID", "DIRECTION", "PROTOCOL", "PORT RANGE", "CIDR", "ACTION", "PRIORITY");
+        for (FirewallRule rule : rules) {
+            String portRange = rule.portRangeStart() != null ? rule.portRangeStart() + "-" + rule.portRangeEnd() : "-";
+            out.printf(
+                    "%-38s %-38s %-9s %-8s %-11s %-20s %-6s %d%n", rule.id().value(), rule.networkId().value(), rule.direction(),
+                    rule.protocol(), portRange, rule.cidr(), rule.action(), rule.priority());
+        }
+    }
+
+    private void writeProjects(List<Project> projects, PrintWriter out) {
+        if (projects.isEmpty()) {
+            out.println("No projects.");
+            return;
+        }
+        out.printf("%-38s %-20s %s%n", "ID", "NAME", "DESCRIPTION");
+        for (Project project : projects) {
+            out.printf("%-38s %-20s %s%n", project.id().value(), project.name(), project.description() != null ? project.description() : "-");
+        }
+    }
+
+    private void writeIamUsers(List<CliResult.IamUserView> users, PrintWriter out) {
+        if (users.isEmpty()) {
+            out.println("No users.");
+            return;
+        }
+        out.printf("%-38s %-16s %-8s %s%n", "ID", "USERNAME", "ENABLED", "ROLES");
+        for (CliResult.IamUserView user : users) {
+            out.printf("%-38s %-16s %-8s %s%n", user.id(), user.username(), user.enabled(), String.join(",", user.roles()));
+        }
+    }
+
+    private void writeIamRoles(List<CliResult.IamRoleView> roles, PrintWriter out) {
+        if (roles.isEmpty()) {
+            out.println("No roles.");
+            return;
+        }
+        out.printf("%-38s %-20s %s%n", "ID", "NAME", "PERMISSIONS");
+        for (CliResult.IamRoleView role : roles) {
+            out.printf("%-38s %-20s %s%n", role.id(), role.name(), String.join(",", role.permissions()));
+        }
+    }
+
+    private void writeIamGroups(List<CliResult.IamGroupView> groups, PrintWriter out) {
+        if (groups.isEmpty()) {
+            out.println("No groups.");
+            return;
+        }
+        out.printf("%-38s %-20s %-30s %s%n", "ID", "NAME", "ROLES", "MEMBERS");
+        for (CliResult.IamGroupView group : groups) {
+            out.printf(
+                    "%-38s %-20s %-30s %s%n", group.id(), group.name(), String.join(",", group.roles()),
+                    String.join(",", group.members()));
+        }
+    }
+
+    private void writeIamCredentials(List<CliResult.IamCredentialView> credentials, PrintWriter out) {
+        if (credentials.isEmpty()) {
+            out.println("No API credentials.");
+            return;
+        }
+        out.printf("%-38s %-38s %-20s %-24s %s%n", "ID", "OWNER ID", "NAME", "EXPIRES AT", "LAST USED AT");
+        for (CliResult.IamCredentialView credential : credentials) {
+            out.printf(
+                    "%-38s %-38s %-20s %-24s %s%n", credential.id(), credential.ownerId(), credential.name(),
+                    credential.expiresAt() != null ? credential.expiresAt() : "-",
+                    credential.lastUsedAt() != null ? credential.lastUsedAt() : "-");
+        }
+    }
+
+    private void writeIamIssuedCredential(CliResult.IamIssuedCredentialView result, PrintWriter out) {
+        out.printf("id:    %s%n", result.credential().id());
+        out.printf("name:  %s%n", result.credential().name());
+        out.printf("token: %s%n", result.token());
+        out.println("Save this now — it will not be shown again.");
     }
 
     private void writeDomains(List<Domain> domains, PrintWriter out) {

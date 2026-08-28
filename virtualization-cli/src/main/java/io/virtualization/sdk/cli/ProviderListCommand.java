@@ -2,6 +2,7 @@ package io.virtualization.sdk.cli;
 
 import io.virtualization.sdk.cli.output.CliResult;
 import io.virtualization.sdk.cli.output.ProviderSummary;
+import io.virtualization.sdk.iam.Permissions;
 import picocli.CommandLine.Command;
 
 import java.util.Comparator;
@@ -12,6 +13,7 @@ final class ProviderListCommand extends AbstractCliCommand {
 
     @Override
     public Integer call() {
+        requirePermission(Permissions.PROVIDER_LIST);
         List<ProviderSummary> summaries = client().providers().entrySet().stream()
                 .map(e -> new ProviderSummary(e.getKey(), e.getValue().type().id(), e.getValue().capabilities().all()))
                 .sorted(Comparator.comparing(ProviderSummary::name))

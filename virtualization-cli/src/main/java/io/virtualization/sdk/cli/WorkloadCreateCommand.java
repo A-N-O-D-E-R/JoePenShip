@@ -8,6 +8,7 @@ import io.virtualization.sdk.core.image.ImageReference;
 import io.virtualization.sdk.core.image.ProviderOptions;
 import io.virtualization.sdk.core.image.WorkloadSpec;
 import io.virtualization.sdk.core.image.WorkloadType;
+import io.virtualization.sdk.iam.Permissions;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 
@@ -58,6 +59,7 @@ final class WorkloadCreateCommand extends AbstractCliCommand {
 
     @Override
     public Integer call() {
+        requirePermission(Permissions.WORKLOAD_CREATE);
         String providerName = requireProviderName();
         ImageReference ref = ImageReferences.parse(providerName, image);
 

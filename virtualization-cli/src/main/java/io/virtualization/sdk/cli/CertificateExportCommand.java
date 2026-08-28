@@ -5,6 +5,7 @@ import io.virtualization.sdk.certificate.CertificateMaterial;
 import io.virtualization.sdk.cli.certificate.Passphrases;
 import io.virtualization.sdk.cli.output.CliResult;
 import io.virtualization.sdk.core.exception.ResourceNotFoundException;
+import io.virtualization.sdk.iam.Permissions;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.ParameterException;
@@ -45,6 +46,7 @@ final class CertificateExportCommand extends AbstractCliCommand {
 
     @Override
     public Integer call() {
+        requirePermission(Permissions.CERTIFICATE_EXPORT);
         if (privateKeyPath != null && !(includePrivateKey && yes)) {
             throw new ParameterException(
                     spec.commandLine(),

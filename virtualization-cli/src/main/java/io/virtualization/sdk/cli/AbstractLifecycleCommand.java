@@ -27,8 +27,11 @@ abstract class AbstractLifecycleCommand extends AbstractCliCommand {
 
     protected abstract Operation invoke(VirtualizationProvider provider, String id);
 
+    protected abstract String permission();
+
     @Override
     public final Integer call() {
+        requirePermission(permission());
         Operation operation = invoke(provider(), id);
         if (wait) {
             operation.await(Duration.ofSeconds(timeoutSeconds));

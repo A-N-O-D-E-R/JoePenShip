@@ -3,6 +3,7 @@ package io.virtualization.sdk.cli;
 import io.virtualization.sdk.cli.output.CliResult;
 import io.virtualization.sdk.core.OperationStatus;
 import io.virtualization.sdk.core.image.ImageReference;
+import io.virtualization.sdk.iam.Permissions;
 import io.virtualization.sdk.vps.CreateVpsOperation;
 import io.virtualization.sdk.vps.VpsId;
 import io.virtualization.sdk.vps.VpsManager;
@@ -33,6 +34,7 @@ final class VpsRebuildCommand extends AbstractCliCommand {
 
     @Override
     public Integer call() {
+        requirePermission(Permissions.VPS_REBUILD);
         ImageReference ref = ImageReferences.parse(requireProviderName(), image);
 
         VpsManager manager = vpsManager();

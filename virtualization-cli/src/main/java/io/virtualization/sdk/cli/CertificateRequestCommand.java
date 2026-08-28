@@ -5,6 +5,7 @@ import io.virtualization.sdk.certificate.CertificateRequest;
 import io.virtualization.sdk.certificate.ChallengeType;
 import io.virtualization.sdk.cli.certificate.Passphrases;
 import io.virtualization.sdk.cli.output.CliResult;
+import io.virtualization.sdk.iam.Permissions;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 
@@ -30,6 +31,7 @@ final class CertificateRequestCommand extends AbstractCliCommand {
 
     @Override
     public Integer call() {
+        requirePermission(Permissions.CERTIFICATE_REQUEST);
         String issuer = requireProviderName();
         if (dnsProvider != null) {
             dnsProviderRegistry().get(dnsProvider); // existence-check only; ConfigurationException propagates unrewrapped

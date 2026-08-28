@@ -5,6 +5,7 @@ import io.virtualization.sdk.core.OperationStatus;
 import io.virtualization.sdk.core.image.Image;
 import io.virtualization.sdk.core.image.ImageImportOperation;
 import io.virtualization.sdk.core.image.LocalFileImageSource;
+import io.virtualization.sdk.iam.Permissions;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
@@ -30,6 +31,7 @@ final class ImageImportCommand extends AbstractCliCommand {
 
     @Override
     public Integer call() {
+        requirePermission(Permissions.IMAGE_IMPORT);
         requireProviderName();
         ImageImportOperation operation = images().importImage(new LocalFileImageSource(file));
         if (wait) {
