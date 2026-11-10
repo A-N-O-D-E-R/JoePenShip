@@ -3,4 +3,7 @@ io.virtualization.sdk.spring.VpsAutoConfiguration
 io.virtualization.sdk.spring.DnsAutoConfiguration
 io.virtualization.sdk.spring.DomainAutoConfiguration
 io.virtualization.sdk.spring.CertificateAutoConfiguration
+io.virtualization.sdk.spring.ProjectAutoConfiguration
+io.virtualization.sdk.spring.NetworkAutoConfiguration
+io.virtualization.sdk.spring.LoadBalancerAutoConfiguration
 io.virtualization.sdk.spring.web.VirtualizationWebAutoConfiguration

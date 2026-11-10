@@ -166,6 +166,28 @@ public final class VpsSpec {
             this.image = image;
         }
 
+        /** A builder pre-populated with every field of {@code original}, for a copy-and-modify-one-field use case. */
+        public static Builder from(VpsSpec original) {
+            Objects.requireNonNull(original, "original must not be null");
+            return new Builder(original.name, original.image)
+                    .type(original.type)
+                    .compute(original.compute)
+                    .storage(original.storage)
+                    .network(original.network)
+                    .sshPublicKeys(original.sshPublicKeys)
+                    .cloudInit(original.cloudInit)
+                    .metadata(original.metadata)
+                    .labels(original.labels)
+                    .location(original.location)
+                    .project(original.project)
+                    .idempotencyKey(original.idempotencyKey)
+                    .domains(original.domains)
+                    .dnsProvider(original.dnsProvider)
+                    .dnsPolicy(original.dnsPolicy)
+                    .tlsEnabled(original.tlsEnabled)
+                    .tlsCertificateIssuer(original.tlsCertificateIssuer);
+        }
+
         public Builder type(VpsType type) {
             this.type = type;
             return this;

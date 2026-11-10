@@ -3,6 +3,7 @@ package io.virtualization.sdk.cli;
 import io.virtualization.sdk.cli.output.CliResult;
 import io.virtualization.sdk.core.OperationStatus;
 import io.virtualization.sdk.core.image.ImageReference;
+import io.virtualization.sdk.iam.Permissions;
 import io.virtualization.sdk.vps.CreateVpsOperation;
 import io.virtualization.sdk.vps.DataSize;
 import io.virtualization.sdk.vps.NetworkConfiguration;
@@ -81,6 +82,7 @@ final class VpsCreateCommand extends AbstractCliCommand {
 
     @Override
     public Integer call() {
+        requirePermission(Permissions.VPS_CREATE);
         String providerName = requireProviderName();
         ImageReference ref = ImageReferences.parse(providerName, image);
 

@@ -1,0 +1,96 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<project xmlns="http://maven.apache.org/POM/4.0.0"
+         xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance"
+         xsi:schemaLocation="http://maven.apache.org/POM/4.0.0 http://maven.apache.org/xsd/maven-4.0.0.xsd">
+  <modelVersion>4.0.0</modelVersion>
+
+  <parent>
+    <groupId>io.virtualization.sdk</groupId>
+    <artifactId>virtualization-sdk</artifactId>
+    <version>0.1.0-SNAPSHOT</version>
+  </parent>
+
+  <artifactId>virtualization-iam-spring</artifactId>
+
+  <name>Virtualization SDK :: IAM :: Spring Boot Auto-configuration</name>
+  <description>
+    Wires virtualization-iam's users/roles/API credentials into a Spring Security filter chain
+    gating /api/v1/** by permission, plus an ApiTokenAuthenticationFilter for Authorization: Bearer
+    requests and a PermissionExpandingGrantedAuthoritiesMapper bridging OIDC logins (via the
+    optional virtualization-spring-security module) to the same permission model. A peer of
+    virtualization-spring-boot-autoconfigure, not a dependency of it or vice versa — activates only
+    when virtualization.iam.enabled=true, off by default.
+  </description>
+
+  <dependencies>
+    <dependency>
+      <groupId>io.virtualization.sdk</groupId>
+      <artifactId>virtualization-iam</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>io.virtualization.sdk</groupId>
+      <artifactId>virtualization-iam-store</artifactId>
+      <version>${project.version}</version>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-security</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-autoconfigure</artifactId>
+    </dependency>
+    <!-- OncePerRequestFilter (spring-web) and the servlet API it's built on — not pulled in by
+         spring-boot-starter-security alone, and deliberately not spring-boot-starter-web (no
+         embedded container needed here, this module only needs the filter/servlet types). -->
+    <dependency>
+      <groupId>org.springframework</groupId>
+      <artifactId>spring-web</artifactId>
+    </dependency>
+    <dependency>
+      <groupId>jakarta.servlet</groupId>
+      <artifactId>jakarta.servlet-api</artifactId>
+      <scope>provided</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-configuration-processor</artifactId>
+      <optional>true</optional>
+    </dependency>
+
+    <dependency>
+      <groupId>org.junit.jupiter</groupId>
+      <artifactId>junit-jupiter</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.junit.platform</groupId>
+      <artifactId>junit-platform-launcher</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.assertj</groupId>
+      <artifactId>assertj-core</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <dependency>
+      <groupId>org.springframework</groupId>
+      <artifactId>spring-test</artifactId>
+      <scope>test</scope>
+    </dependency>
+    <!-- Embedded Tomcat, for the one real-HTTP SecurityFilterChain integration test — this
+         module's own runtime deps stay web-container-free (see the spring-web/servlet-api note
+         above). -->
+    <dependency>
+      <groupId>org.springframework.boot</groupId>
+      <artifactId>spring-boot-starter-web</artifactId>
+      <scope>test</scope>
+    </dependency>
+  </dependencies>
+</project>

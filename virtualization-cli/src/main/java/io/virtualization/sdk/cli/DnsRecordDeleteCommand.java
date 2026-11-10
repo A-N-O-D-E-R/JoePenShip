@@ -1,6 +1,7 @@
 package io.virtualization.sdk.cli;
 
 import io.virtualization.sdk.cli.output.CliResult;
+import io.virtualization.sdk.iam.Permissions;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
@@ -19,6 +20,7 @@ final class DnsRecordDeleteCommand extends AbstractCliCommand {
 
     @Override
     public Integer call() {
+        requirePermission(Permissions.DNS_RECORDS_DELETE);
         dnsProviderRegistry().get(dnsProvider).deleteRecord(zone, id);
         outputWriter().write(new CliResult.Ack(id, "DNS record deleted."), out());
         return ExitCodes.OK;

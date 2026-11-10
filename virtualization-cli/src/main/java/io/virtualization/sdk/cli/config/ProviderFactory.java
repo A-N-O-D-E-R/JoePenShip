@@ -6,7 +6,9 @@ import io.virtualization.sdk.core.image.ImageProvider;
 import io.virtualization.sdk.incus.IncusClientConfig;
 import io.virtualization.sdk.incus.IncusImageProvider;
 import io.virtualization.sdk.incus.IncusProvider;
+import io.virtualization.sdk.incus.IncusStorageProvider;
 import io.virtualization.sdk.incus.IncusTlsCredentials;
+import io.virtualization.sdk.storage.StorageProvider;
 import io.virtualization.sdk.proxmox.ProxmoxClientConfig;
 import io.virtualization.sdk.proxmox.ProxmoxCredentials;
 import io.virtualization.sdk.proxmox.ProxmoxProvider;
@@ -47,6 +49,17 @@ public final class ProviderFactory {
             return Optional.empty();
         }
         return Optional.of(new IncusImageProvider(buildIncusConfig(name, entry)));
+    }
+
+    /**
+     * Builds the {@link StorageProvider} counterpart of {@link #create}, if the provider's type
+     * has one — currently only {@code incus}. Proxmox and QEMU don't implement storage yet.
+     */
+    public static Optional<StorageProvider> createStorageProvider(String name, ProviderEntry entry) {
+        if (!"incus".equals(entry.type())) {
+            return Optional.empty();
+        }
+        return Optional.of(new IncusStorageProvider(buildIncusConfig(name, entry)));
     }
 
     private static VirtualizationProvider createProxmox(String name, ProviderEntry entry) {

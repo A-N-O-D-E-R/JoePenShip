@@ -28,8 +28,11 @@ abstract class AbstractVpsLifecycleCommand extends AbstractCliCommand {
 
     protected abstract Operation invoke(VpsManager manager, VpsId id);
 
+    protected abstract String permission();
+
     @Override
     public final Integer call() {
+        requirePermission(permission());
         VpsManager manager = vpsManager();
         VpsId vpsId = new VpsId(id);
         Operation operation = invoke(manager, vpsId);

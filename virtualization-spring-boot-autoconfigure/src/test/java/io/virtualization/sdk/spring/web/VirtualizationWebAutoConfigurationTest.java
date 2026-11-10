@@ -5,6 +5,9 @@ import io.virtualization.sdk.core.image.ImageProviderRegistry;
 import io.virtualization.sdk.spring.CertificateAutoConfiguration;
 import io.virtualization.sdk.spring.DnsAutoConfiguration;
 import io.virtualization.sdk.spring.DomainAutoConfiguration;
+import io.virtualization.sdk.spring.LoadBalancerAutoConfiguration;
+import io.virtualization.sdk.spring.NetworkAutoConfiguration;
+import io.virtualization.sdk.spring.ProjectAutoConfiguration;
 import io.virtualization.sdk.spring.VirtualizationAutoConfiguration;
 import io.virtualization.sdk.spring.VpsAutoConfiguration;
 import io.virtualization.sdk.spring.web.support.FakeImageProvider;
@@ -20,8 +23,9 @@ import static org.assertj.core.api.Assertions.assertThat;
 
 class VirtualizationWebAutoConfigurationTest {
 
-    private final AutoConfigurations autoConfigurations =
-            AutoConfigurations.of(VirtualizationAutoConfiguration.class, VirtualizationWebAutoConfiguration.class);
+    private final AutoConfigurations autoConfigurations = AutoConfigurations.of(
+            VirtualizationAutoConfiguration.class, ProjectAutoConfiguration.class, NetworkAutoConfiguration.class,
+            LoadBalancerAutoConfiguration.class, VirtualizationWebAutoConfiguration.class);
 
     @Test
     void controllersAreNotRegisteredInANonWebApplication() {
@@ -38,6 +42,15 @@ class VirtualizationWebAutoConfigurationTest {
             assertThat(context).hasNotFailed();
             assertThat(context).hasSingleBean(ImageController.class);
             assertThat(context).hasSingleBean(WorkloadController.class);
+            assertThat(context).hasSingleBean(ProjectController.class);
+            assertThat(context).hasSingleBean(NetworkController.class);
+            assertThat(context).hasSingleBean(SubnetController.class);
+            assertThat(context).hasSingleBean(IpAllocationController.class);
+            assertThat(context).hasSingleBean(FirewallRuleController.class);
+            assertThat(context).hasSingleBean(StoragePoolController.class);
+            assertThat(context).hasSingleBean(VolumeController.class);
+            assertThat(context).hasSingleBean(LoadBalancerController.class);
+            assertThat(context).hasSingleBean(RouteController.class);
             assertThat(context).hasSingleBean(RestExceptionHandler.class);
         });
     }
@@ -56,7 +69,8 @@ class VirtualizationWebAutoConfigurationTest {
     @Test
     void vpsControllerRegistersOnlyWhenVpsProviderConfigured() {
         AutoConfigurations withVps = AutoConfigurations.of(
-                VirtualizationAutoConfiguration.class, VpsAutoConfiguration.class, VirtualizationWebAutoConfiguration.class);
+                VirtualizationAutoConfiguration.class, VpsAutoConfiguration.class, ProjectAutoConfiguration.class,
+                NetworkAutoConfiguration.class, LoadBalancerAutoConfiguration.class, VirtualizationWebAutoConfiguration.class);
         WebApplicationContextRunner base = new WebApplicationContextRunner()
                 .withConfiguration(withVps)
                 .withBean(ProviderRegistry.class, () -> new ProviderRegistry(Map.of("fake", new FakeVirtualizationProvider())))
@@ -76,7 +90,9 @@ class VirtualizationWebAutoConfigurationTest {
     @Test
     void domainControllerRegistersOnlyWhenDomainsEnabled() {
         AutoConfigurations withDomains = AutoConfigurations.of(
-                VirtualizationAutoConfiguration.class, DnsAutoConfiguration.class, DomainAutoConfiguration.class, VirtualizationWebAutoConfiguration.class);
+                VirtualizationAutoConfiguration.class, DnsAutoConfiguration.class, DomainAutoConfiguration.class,
+                ProjectAutoConfiguration.class, NetworkAutoConfiguration.class, LoadBalancerAutoConfiguration.class,
+                VirtualizationWebAutoConfiguration.class);
         WebApplicationContextRunner base = new WebApplicationContextRunner().withConfiguration(withDomains);
 
         base.run(context -> {
@@ -94,6 +110,7 @@ class VirtualizationWebAutoConfigurationTest {
     void certificateControllerRegistersOnlyWhenCertificatesEnabled() {
         AutoConfigurations withCertificates = AutoConfigurations.of(
                 VirtualizationAutoConfiguration.class, DnsAutoConfiguration.class, CertificateAutoConfiguration.class,
+                ProjectAutoConfiguration.class, NetworkAutoConfiguration.class, LoadBalancerAutoConfiguration.class,
                 VirtualizationWebAutoConfiguration.class);
         WebApplicationContextRunner base = new WebApplicationContextRunner()
                 .withConfiguration(withCertificates)

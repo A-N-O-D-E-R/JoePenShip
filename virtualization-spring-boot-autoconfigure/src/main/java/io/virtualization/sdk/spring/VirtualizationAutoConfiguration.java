@@ -5,6 +5,8 @@ import io.virtualization.sdk.core.VirtualizationClient;
 import io.virtualization.sdk.core.VirtualizationProvider;
 import io.virtualization.sdk.core.image.ImageProvider;
 import io.virtualization.sdk.core.image.ImageProviderRegistry;
+import io.virtualization.sdk.storage.StorageProvider;
+import io.virtualization.sdk.storage.StorageProviderRegistry;
 import org.springframework.boot.autoconfigure.AutoConfiguration;
 import org.springframework.boot.autoconfigure.condition.ConditionalOnMissingBean;
 import org.springframework.boot.context.properties.EnableConfigurationProperties;
@@ -46,5 +48,20 @@ public class VirtualizationAutoConfiguration {
     @ConditionalOnMissingBean
     public VirtualizationClient virtualizationClient(ProviderRegistry providerRegistry, ImageProviderRegistry imageProviderRegistry) {
         return new VirtualizationClient(providerRegistry, imageProviderRegistry);
+    }
+
+    /**
+     * Not part of {@link VirtualizationClient} — that class lives in {@code virtualization-core},
+     * which cannot depend on {@code virtualization-storage}. A storage-capable provider (only
+     * {@code incus} today) is the same physical connection as its {@link ProviderRegistry} entry,
+     * built from the same {@code virtualization.providers.*} configuration, not a separate section.
+     */
+    @Bean
+    @ConditionalOnMissingBean
+    public StorageProviderRegistry storageProviderRegistry(VirtualizationProperties properties) {
+        Map<String, StorageProvider> storageProviders = new LinkedHashMap<>();
+        properties.providers()
+                .forEach((name, entry) -> ProviderFactory.createStorageProvider(name, entry).ifPresent(p -> storageProviders.put(name, p)));
+        return new StorageProviderRegistry(storageProviders);
     }
 }

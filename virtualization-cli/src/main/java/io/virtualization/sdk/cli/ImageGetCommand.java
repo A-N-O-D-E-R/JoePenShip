@@ -4,6 +4,7 @@ import io.virtualization.sdk.cli.output.CliResult;
 import io.virtualization.sdk.core.exception.ResourceNotFoundException;
 import io.virtualization.sdk.core.image.Image;
 import io.virtualization.sdk.core.image.ImageReference;
+import io.virtualization.sdk.iam.Permissions;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Parameters;
 
@@ -15,6 +16,7 @@ final class ImageGetCommand extends AbstractCliCommand {
 
     @Override
     public Integer call() {
+        requirePermission(Permissions.IMAGE_GET);
         String providerName = requireProviderName();
         ImageReference ref = ImageReferences.parse(providerName, reference);
         Image image = client().images(providerName).get(ref)

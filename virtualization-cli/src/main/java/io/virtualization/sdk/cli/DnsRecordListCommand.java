@@ -1,6 +1,7 @@
 package io.virtualization.sdk.cli;
 
 import io.virtualization.sdk.cli.output.CliResult;
+import io.virtualization.sdk.iam.Permissions;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Option;
 import picocli.CommandLine.Parameters;
@@ -16,6 +17,7 @@ final class DnsRecordListCommand extends AbstractCliCommand {
 
     @Override
     public Integer call() {
+        requirePermission(Permissions.DNS_RECORDS_LIST);
         outputWriter().write(new CliResult.DnsRecordList(dnsProviderRegistry().get(dnsProvider).records(zone)), out());
         return ExitCodes.OK;
     }

@@ -2,6 +2,7 @@ package io.virtualization.sdk.cli;
 
 import io.virtualization.sdk.certificate.CertificateId;
 import io.virtualization.sdk.cli.output.CliResult;
+import io.virtualization.sdk.iam.Permissions;
 import picocli.CommandLine.Command;
 import picocli.CommandLine.Parameters;
 
@@ -13,6 +14,7 @@ final class CertificateRenewCommand extends AbstractCliCommand {
 
     @Override
     public Integer call() {
+        requirePermission(Permissions.CERTIFICATE_RENEW);
         outputWriter().write(new CliResult.CertificateView(certificateManager().renew(new CertificateId(id))), out());
         return ExitCodes.OK;
     }

@@ -97,4 +97,50 @@ class VpsSpecTest {
         assertThat(spec.project()).contains("default");
         assertThat(spec.idempotencyKey()).contains("key-1");
     }
+
+    @Test
+    void builderFromCopiesEveryFieldForModificationWithoutAffectingTheOriginal() {
+        NetworkConfiguration network = new NetworkConfiguration("default", null, null, "web-01");
+        VpsSpec original = VpsSpec.builder("web-01", IMAGE)
+                .type(VpsType.CONTAINER)
+                .compute(new ComputeResources(2, 4_096))
+                .storage(new StorageConfiguration(DataSize.ofGigabytes(40), "fast", null))
+                .network(network)
+                .sshPublicKeys(List.of("ssh-ed25519 AAAA"))
+                .cloudInit("#cloud-config\n")
+                .metadata(Map.of("k", "v"))
+                .labels(Map.of("env", "prod"))
+                .location("us-east")
+                .project("default")
+                .idempotencyKey("key-1")
+                .domains(List.of("example.com"))
+                .dnsProvider("cloudflare")
+                .dnsPolicy(DnsProvisioningPolicy.CREATE_AND_UPDATE)
+                .tlsEnabled(true)
+                .tlsCertificateIssuer("letsencrypt")
+                .build();
+
+        NetworkConfiguration replacementNetwork = new NetworkConfiguration("default", "10.0.0.5", null, "web-01");
+        VpsSpec copy = VpsSpec.Builder.from(original).network(replacementNetwork).build();
+
+        assertThat(copy.name()).isEqualTo(original.name());
+        assertThat(copy.image()).isEqualTo(original.image());
+        assertThat(copy.type()).isEqualTo(original.type());
+        assertThat(copy.compute()).isEqualTo(original.compute());
+        assertThat(copy.storage()).isEqualTo(original.storage());
+        assertThat(copy.network()).contains(replacementNetwork);
+        assertThat(copy.sshPublicKeys()).isEqualTo(original.sshPublicKeys());
+        assertThat(copy.cloudInit()).isEqualTo(original.cloudInit());
+        assertThat(copy.metadata()).isEqualTo(original.metadata());
+        assertThat(copy.labels()).isEqualTo(original.labels());
+        assertThat(copy.location()).isEqualTo(original.location());
+        assertThat(copy.project()).isEqualTo(original.project());
+        assertThat(copy.idempotencyKey()).isEqualTo(original.idempotencyKey());
+        assertThat(copy.domains()).isEqualTo(original.domains());
+        assertThat(copy.dnsProvider()).isEqualTo(original.dnsProvider());
+        assertThat(copy.dnsPolicy()).isEqualTo(original.dnsPolicy());
+        assertThat(copy.tlsEnabled()).isEqualTo(original.tlsEnabled());
+        assertThat(copy.tlsCertificateIssuer()).isEqualTo(original.tlsCertificateIssuer());
+        assertThat(original.network()).contains(network);
+    }
 }
