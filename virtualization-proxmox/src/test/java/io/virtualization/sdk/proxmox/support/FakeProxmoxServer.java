@@ -27,6 +27,9 @@ public final class FakeProxmoxServer implements AutoCloseable {
     private static final Pattern ACTION_PATH =
             Pattern.compile("/api2/json/nodes/([^/]+)/qemu/(\\d+)/status/([a-z]+)");
     private static final Pattern DESTROY_PATH = Pattern.compile("/api2/json/nodes/([^/]+)/qemu/(\\d+)");
+    private static final Pattern CLONE_PATH = Pattern.compile("/api2/json/nodes/([^/]+)/qemu/(\\d+)/clone");
+    private static final Pattern CONFIG_PATH = Pattern.compile("/api2/json/nodes/([^/]+)/qemu/(\\d+)/config");
+    private static final Pattern RESIZE_PATH = Pattern.compile("/api2/json/nodes/([^/]+)/qemu/(\\d+)/resize");
     private static final Pattern TASK_STATUS_PATH = Pattern.compile("/api2/json/nodes/([^/]+)/tasks/(.+)/status");
 
     private final ObjectMapper mapper = new ObjectMapper();
@@ -36,6 +39,8 @@ public final class FakeProxmoxServer implements AutoCloseable {
     private final Map<String, TaskState> tasks = new ConcurrentHashMap<>();
     private volatile int pollsBeforeCompletion = 0;
     private volatile boolean nextTaskFails = false;
+    private final Map<Integer, Map<String, String>> configs = new ConcurrentHashMap<>();
+    private final java.util.concurrent.atomic.AtomicInteger nextIdCollisions = new java.util.concurrent.atomic.AtomicInteger();
 
     public FakeProxmoxServer(String expectedAuthorizationHeader) {
         this.expectedAuthorizationHeader = expectedAuthorizationHeader;
@@ -70,6 +75,31 @@ public final class FakeProxmoxServer implements AutoCloseable {
         vms.put(vmid, new VmState(node, name, status, maxcpu, maxmemBytes));
     }
 
+    /** A template VM with a boot disk of the given size (e.g. {@code "10G"}) and a cloud-init drive. */
+    public void addTemplate(int vmid, String node, String name, String diskSize) {
+        addVm(vmid, node, name, "stopped", 1, 1_073_741_824L);
+        Map<String, String> config = new ConcurrentHashMap<>();
+        config.put("boot", "order=ide2;scsi0;net0");
+        config.put("ide2", "local-lvm:vm-" + vmid + "-cloudinit,media=cdrom");
+        config.put("scsi0", "local-lvm:base-" + vmid + "-disk-0,size=" + diskSize);
+        config.put("template", "1");
+        configs.put(vmid, config);
+    }
+
+    /** The VM's configuration as last written (cloned from its template, then updated). */
+    public Map<String, String> config(int vmid) {
+        return configs.get(vmid);
+    }
+
+    public Integer vmidByName(String name) {
+        return vms.entrySet().stream().filter(e -> e.getValue().name().equals(name)).map(Map.Entry::getKey).findFirst().orElse(null);
+    }
+
+    /** The next {@code times} calls to /cluster/nextid return an id already in use, like a race with another client. */
+    public void nextIdCollides(int times) {
+        nextIdCollisions.set(times);
+    }
+
     private void handle(HttpExchange exchange) throws IOException {
         try {
             if (!expectedAuthorizationHeader.equals(exchange.getRequestHeaders().getFirst("Authorization"))) {
@@ -90,6 +120,66 @@ public final class FakeProxmoxServer implements AutoCloseable {
             List<Map<String, Object>> resources = new ArrayList<>();
             vms.forEach((vmid, vm) -> resources.add(toResourceJson(vmid, vm)));
             sendJson(exchange, 200, Map.of("data", resources));
+            return;
+        }
+
+        if ("GET".equals(method) && path.equals("/api2/json/cluster/nextid")) {
+            int max = vms.keySet().stream().max(Integer::compare).orElse(99);
+            int id = nextIdCollisions.getAndUpdate(n -> Math.max(0, n - 1)) > 0 ? max : max + 1;
+            sendJson(exchange, 200, Map.of("data", String.valueOf(id)));
+            return;
+        }
+
+        Matcher clone = CLONE_PATH.matcher(path);
+        if ("POST".equals(method) && clone.matches()) {
+            Map<String, String> form = form(exchange);
+            int newid = Integer.parseInt(form.get("newid"));
+            int source = Integer.parseInt(clone.group(2));
+            if (vms.containsKey(newid)) {
+                sendJson(exchange, 500, Map.of("message", "unable to create VM " + newid + ": config file already exists", "data", ""));
+                return;
+            }
+            VmState template = vms.get(source);
+            String target = form.getOrDefault("target", template.node());
+            vms.put(newid, new VmState(target, form.get("name"), "stopped", template.maxcpu(), template.maxmemBytes()));
+            Map<String, String> config = new ConcurrentHashMap<>(configs.getOrDefault(source, Map.of()));
+            config.remove("template");
+            config.replaceAll((k, v) -> v.replace("base-" + source, "vm-" + newid).replace("vm-" + source, "vm-" + newid));
+            configs.put(newid, config);
+            sendTask(exchange, clone.group(1), "qmclone", source);
+            return;
+        }
+
+        Matcher config = CONFIG_PATH.matcher(path);
+        if (config.matches()) {
+            int vmid = Integer.parseInt(config.group(2));
+            if (!vms.containsKey(vmid)) {
+                sendJson(exchange, 404, Map.of());
+                return;
+            }
+            if ("GET".equals(method)) {
+                sendJson(exchange, 200, Map.of("data", configs.getOrDefault(vmid, Map.of())));
+                return;
+            }
+            Map<String, String> form = form(exchange);
+            configs.computeIfAbsent(vmid, k -> new ConcurrentHashMap<>()).putAll(form);
+            if (form.containsKey("cores") || form.containsKey("memory")) {
+                VmState vm = vms.get(vmid);
+                vms.put(vmid, new VmState(vm.node(), vm.name(), vm.status(),
+                        Integer.parseInt(form.getOrDefault("cores", String.valueOf(vm.maxcpu()))),
+                        form.containsKey("memory") ? Long.parseLong(form.get("memory")) * 1024 * 1024 : vm.maxmemBytes()));
+            }
+            sendTask(exchange, config.group(1), "qmconfig", vmid); // async variant (POST)
+            return;
+        }
+
+        Matcher resize = RESIZE_PATH.matcher(path);
+        if ("PUT".equals(method) && resize.matches()) {
+            int vmid = Integer.parseInt(resize.group(2));
+            Map<String, String> form = form(exchange);
+            String disk = form.get("disk");
+            configs.get(vmid).computeIfPresent(disk, (k, v) -> v.replaceAll("size=[^,]+", "size=" + form.get("size")));
+            sendJson(exchange, 200, Map.of("data", "")); // synchronous, like PVE 7
             return;
         }
 
@@ -124,6 +214,26 @@ public final class FakeProxmoxServer implements AutoCloseable {
         tasks.put(upid, new TaskState(pollsBeforeCompletion, !nextTaskFails));
         nextTaskFails = false;
         sendJson(exchange, 200, Map.of("data", upid));
+    }
+
+    private void sendTask(HttpExchange exchange, String node, String type, int vmid) throws IOException {
+        String upid = "UPID:" + node + ":00000001:00000002:6612ABCD:" + type + ":" + vmid + ":test@pve!token:" + tasks.size();
+        tasks.put(upid, new TaskState(pollsBeforeCompletion, !nextTaskFails));
+        nextTaskFails = false;
+        sendJson(exchange, 200, Map.of("data", upid));
+    }
+
+    private static Map<String, String> form(HttpExchange exchange) throws IOException {
+        String body = new String(exchange.getRequestBody().readAllBytes(), java.nio.charset.StandardCharsets.UTF_8);
+        Map<String, String> out = new LinkedHashMap<>();
+        for (String pair : body.split("&")) {
+            if (!pair.isEmpty()) {
+                int eq = pair.indexOf('=');
+                out.put(java.net.URLDecoder.decode(pair.substring(0, eq), java.nio.charset.StandardCharsets.UTF_8),
+                        java.net.URLDecoder.decode(pair.substring(eq + 1), java.nio.charset.StandardCharsets.UTF_8));
+            }
+        }
+        return out;
     }
 
     private void handleTaskStatus(HttpExchange exchange, String upid) throws IOException {

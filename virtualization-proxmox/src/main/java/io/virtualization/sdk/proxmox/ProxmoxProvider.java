@@ -14,11 +14,34 @@ import io.virtualization.sdk.proxmox.client.dto.ClusterResourceDto;
 import io.virtualization.sdk.proxmox.internal.DomainMapper;
 import io.virtualization.sdk.proxmox.internal.TaskPoller;
 
+import com.fasterxml.jackson.databind.JsonNode;
+import io.virtualization.sdk.core.image.WorkloadType;
+import io.virtualization.sdk.core.exception.OperationException;
+import io.virtualization.sdk.core.exception.VirtualizationException;
+import io.virtualization.sdk.core.image.CreateWorkloadHandle;
+import io.virtualization.sdk.core.image.CreateWorkloadOperation;
+import io.virtualization.sdk.core.image.ImageAvailabilityPolicy;
+import io.virtualization.sdk.core.image.ImageReference;
+import io.virtualization.sdk.core.image.WorkloadSpec;
+
+import java.net.URLEncoder;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
+import java.util.LinkedHashMap;
 import java.util.List;
+import java.util.Map;
+import java.util.Optional;
+import java.util.regex.Matcher;
+import java.util.regex.Pattern;
+import java.util.stream.Collectors;
 
 /**
  * {@link VirtualizationProvider} backed by the Proxmox VE HTTPS REST API.
+ *
+ * <p>{@link #createFromImage} full-clones a QEMU template (the image identifier is the template's
+ * VMID), then applies CPU/memory, cloud-init SSH keys ({@code configuration} key {@code
+ * sshAuthorizedKeys}) and grows the boot disk to the {@code diskGb} provider option. The {@code node}
+ * provider option picks the target node (default: the template's). The VM is left stopped.
  *
  * <p>Covers QEMU virtual machines only in this iteration; LXC containers, snapshots, storage and
  * networks are exposed by the Proxmox REST API and mapped by {@code virtualization-core}'s domain
@@ -32,6 +55,8 @@ public final class ProxmoxProvider implements VirtualizationProvider {
 
     private static final ProviderCapabilities CAPABILITIES = ProviderCapabilities.of(
             Capability.START, Capability.STOP, Capability.REBOOT, Capability.SHUTDOWN, Capability.DESTROY);
+
+    private static final Pattern DISK_SIZE = Pattern.compile("(?:^|,)size=(\\d+)([KMGT])");
 
     private final ProxmoxApiClient client;
     private final Duration taskPollInterval;
@@ -97,6 +122,143 @@ public final class ProxmoxProvider implements VirtualizationProvider {
         ClusterResourceDto resource = findResource(id);
         String upid = client.deleteForTaskId("/nodes/" + resource.node() + "/qemu/" + id);
         return awaitedOperation(resource.node(), upid);
+    }
+
+    @Override
+    public CreateWorkloadOperation createFromImage(ImageReference image, WorkloadSpec spec, ImageAvailabilityPolicy policy) {
+        if (spec.type() != WorkloadType.VIRTUAL_MACHINE) {
+            throw new UnsupportedCapabilityException("Provider '" + TYPE.id() + "' only creates virtual machines");
+        }
+        if (!image.identifier().matches("\\d+")) {
+            throw new IllegalArgumentException("Proxmox image identifier must be a template VMID, got '" + image.identifier() + "'");
+        }
+        // Proxmox templates cannot be pulled: every policy requires the template to exist.
+        CreateWorkloadHandle handle = CreateWorkloadHandle.create("create-" + spec.name());
+        Thread.ofVirtual().name(handle.operation().id()).start(() -> {
+            try {
+                handle.succeed(create(image.identifier(), spec, handle));
+            } catch (VirtualizationException e) {
+                handle.fail(e);
+            } catch (RuntimeException e) {
+                handle.fail(new OperationException("Creating '" + spec.name() + "' failed: " + e.getMessage(), e));
+            }
+        });
+        return handle.operation();
+    }
+
+    private String create(String templateId, WorkloadSpec spec, CreateWorkloadHandle handle) {
+        ClusterResourceDto template = findResource(templateId);
+        String node = spec.providerOptions().getString("node").orElse(template.node());
+
+        // Idempotent for retries: a VM already carrying the name is the one a previous attempt cloned.
+        String vmid = findByName(spec.name()).map(vm -> String.valueOf(vm.vmid())).orElse(null);
+        if (vmid == null) {
+            vmid = cloneTemplate(template, node, spec.name());
+        } else {
+            node = findResource(vmid).node();
+        }
+        handle.updateProgress(0.6);
+
+        Map<String, String> config = new LinkedHashMap<>();
+        spec.resources().ifPresent(r -> {
+            config.put("cores", String.valueOf(r.cpuCores()));
+            config.put("memory", String.valueOf(r.memoryMb()));
+        });
+        String keys = spec.configuration().get("sshAuthorizedKeys");
+        if (keys != null) {
+            // Proxmox wants sshkeys URL-encoded (spaces as %20) inside the form-encoded body.
+            config.put("sshkeys", URLEncoder.encode(keys.strip() + "\n", StandardCharsets.UTF_8).replace("+", "%20"));
+        }
+        if (!spec.labels().isEmpty()) {
+            config.put("description", spec.labels().entrySet().stream()
+                    .map(e -> e.getKey() + "=" + e.getValue()).sorted().collect(Collectors.joining("\n")));
+        }
+        if (!config.isEmpty()) {
+            awaitIfTask(node, client.postForm("/nodes/" + node + "/qemu/" + vmid + "/config", config));
+        }
+        handle.updateProgress(0.8);
+
+        Optional<Object> diskGb = spec.providerOptions().get("diskGb");
+        if (diskGb.isPresent()) {
+            growBootDisk(node, vmid, Long.parseLong(diskGb.get().toString()));
+        }
+        return vmid;
+    }
+
+    private String cloneTemplate(ClusterResourceDto template, String node, String name) {
+        // nextid can race with another create: Proxmox then refuses the clone, so retry with a fresh id.
+        for (int attempt = 1; ; attempt++) {
+            String vmid = client.getData("/cluster/nextid").asText();
+            Map<String, String> form = new LinkedHashMap<>();
+            form.put("newid", vmid);
+            form.put("name", name);
+            form.put("full", "1");
+            if (!node.equals(template.node())) {
+                form.put("target", node);
+            }
+            try {
+                String upid = client.postForm("/nodes/" + template.node() + "/qemu/" + template.vmid() + "/clone", form).asText();
+                TaskPoller.await(client, template.node(), upid, taskPollInterval);
+                return vmid;
+            } catch (OperationException e) {
+                if (attempt >= 3 || e.getMessage() == null || !e.getMessage().contains("already exists")) {
+                    throw e;
+                }
+            }
+        }
+    }
+
+    /** Grows the boot disk to {@code gb}; never shrinks (Proxmox refuses that). */
+    private void growBootDisk(String node, String vmid, long gb) {
+        JsonNode config = client.getData("/nodes/" + node + "/qemu/" + vmid + "/config");
+        String disk = bootDisk(config);
+        Matcher size = DISK_SIZE.matcher(config.path(disk).asText(""));
+        long currentGb = size.find() ? toGb(Long.parseLong(size.group(1)), size.group(2)) : 0;
+        if (gb > currentGb) {
+            awaitIfTask(node, client.putForm("/nodes/" + node + "/qemu/" + vmid + "/resize", Map.of("disk", disk, "size", gb + "G")));
+        }
+    }
+
+    /** First disk of the boot order ({@code order=scsi0;ide2;net0}), skipping CD-ROMs; else the first usual disk. */
+    static String bootDisk(JsonNode config) {
+        String boot = config.path("boot").asText("");
+        if (boot.startsWith("order=")) {
+            for (String dev : boot.substring(6).split(";")) {
+                String value = config.path(dev).asText("");
+                if (!value.isEmpty() && !value.contains("media=cdrom")) {
+                    return dev;
+                }
+            }
+        }
+        for (String dev : List.of("scsi0", "virtio0", "sata0", "ide0")) {
+            if (config.hasNonNull(dev)) {
+                return dev;
+            }
+        }
+        throw new OperationException("No boot disk found in the VM configuration");
+    }
+
+    private static long toGb(long value, String unit) {
+        return switch (unit) {
+            case "T" -> value * 1024;
+            case "G" -> value;
+            case "M" -> Math.ceilDiv(value, 1024);
+            default -> Math.ceilDiv(value, 1024 * 1024); // K
+        };
+    }
+
+    /** Some endpoints answer synchronously ({@code null}), others with a task UPID depending on the PVE version. */
+    private void awaitIfTask(String node, JsonNode data) {
+        if (data != null && data.isTextual() && data.asText().startsWith("UPID:")) {
+            TaskPoller.await(client, node, data.asText(), taskPollInterval);
+        }
+    }
+
+    private Optional<ClusterResourceDto> findByName(String name) {
+        return client.getList("/cluster/resources?type=vm", ClusterResourceDto.class).stream()
+                .filter(ClusterResourceDto::isQemuVm)
+                .filter(dto -> name.equals(dto.name()))
+                .findFirst();
     }
 
     private Operation dispatch(String id, String action, Capability required) {

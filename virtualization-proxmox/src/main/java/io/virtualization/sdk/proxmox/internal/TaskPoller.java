@@ -23,13 +23,25 @@ public final class TaskPoller {
 
     private static void poll(ProxmoxApiClient client, String node, String upid, OperationHandle handle, Duration pollInterval) {
         try {
+            await(client, node, upid, pollInterval);
+            handle.complete();
+        } catch (VirtualizationException e) {
+            handle.fail(e);
+        }
+    }
+
+    /**
+     * Blocks until the task finishes.
+     *
+     * @throws OperationException if the task fails or the wait is interrupted
+     */
+    public static void await(ProxmoxApiClient client, String node, String upid, Duration pollInterval) {
+        try {
             while (true) {
                 TaskStatusDto status = client.getSingle("/nodes/" + node + "/tasks/" + upid + "/status", TaskStatusDto.class);
                 if (status.isFinished()) {
-                    if (status.isSuccessful()) {
-                        handle.complete();
-                    } else {
-                        handle.fail(new OperationException("Proxmox task " + upid + " failed: " + status.exitstatus()));
+                    if (!status.isSuccessful()) {
+                        throw new OperationException("Proxmox task " + upid + " failed: " + status.exitstatus());
                     }
                     return;
                 }
@@ -37,9 +49,7 @@ public final class TaskPoller {
             }
         } catch (InterruptedException e) {
             Thread.currentThread().interrupt();
-            handle.fail(new OperationException("Interrupted while polling Proxmox task " + upid, e));
-        } catch (VirtualizationException e) {
-            handle.fail(e);
+            throw new OperationException("Interrupted while polling Proxmox task " + upid, e);
         }
     }
 }
