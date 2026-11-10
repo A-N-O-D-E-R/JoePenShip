@@ -52,8 +52,6 @@
     <module>virtualization-storage</module>
     <module>virtualization-loadbalancer</module>
     <module>virtualization-backup</module>
-    <module>virtualization-secrets</module>
-    <module>virtualization-secrets-file</module>
     <module>virtualization-proxmox</module>
     <module>virtualization-incus</module>
     <module>virtualization-qemu</module>
