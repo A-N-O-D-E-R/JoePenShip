@@ -30,6 +30,8 @@ public final class FakeProxmoxServer implements AutoCloseable {
     private static final Pattern CLONE_PATH = Pattern.compile("/api2/json/nodes/([^/]+)/qemu/(\\d+)/clone");
     private static final Pattern CONFIG_PATH = Pattern.compile("/api2/json/nodes/([^/]+)/qemu/(\\d+)/config");
     private static final Pattern RESIZE_PATH = Pattern.compile("/api2/json/nodes/([^/]+)/qemu/(\\d+)/resize");
+    private static final Pattern FW_RULES_PATH = Pattern.compile("/api2/json/nodes/([^/]+)/qemu/(\\d+)/firewall/rules(?:/(\\d+))?");
+    private static final Pattern FW_OPTIONS_PATH = Pattern.compile("/api2/json/nodes/([^/]+)/qemu/(\\d+)/firewall/options");
     private static final Pattern TASK_STATUS_PATH = Pattern.compile("/api2/json/nodes/([^/]+)/tasks/(.+)/status");
 
     private final ObjectMapper mapper = new ObjectMapper();
@@ -40,6 +42,8 @@ public final class FakeProxmoxServer implements AutoCloseable {
     private volatile int pollsBeforeCompletion = 0;
     private volatile boolean nextTaskFails = false;
     private final Map<Integer, Map<String, String>> configs = new ConcurrentHashMap<>();
+    private final Map<Integer, List<Map<String, String>>> firewallRules = new ConcurrentHashMap<>();
+    private final Map<Integer, Map<String, String>> firewallOptions = new ConcurrentHashMap<>();
     private final java.util.concurrent.atomic.AtomicInteger nextIdCollisions = new java.util.concurrent.atomic.AtomicInteger();
 
     public FakeProxmoxServer(String expectedAuthorizationHeader) {
@@ -83,7 +87,17 @@ public final class FakeProxmoxServer implements AutoCloseable {
         config.put("ide2", "local-lvm:vm-" + vmid + "-cloudinit,media=cdrom");
         config.put("scsi0", "local-lvm:base-" + vmid + "-disk-0,size=" + diskSize);
         config.put("template", "1");
+        config.put("net0", "virtio=BC:24:11:00:00:01,bridge=vmbr0");
         configs.put(vmid, config);
+    }
+
+    /** The VM firewall rules, top first (Proxmox inserts new rules at position 0). */
+    public List<Map<String, String>> firewallRules(int vmid) {
+        return firewallRules.getOrDefault(vmid, List.of());
+    }
+
+    public Map<String, String> firewallOptions(int vmid) {
+        return firewallOptions.getOrDefault(vmid, Map.of());
     }
 
     /** The VM's configuration as last written (cloned from its template, then updated). */
@@ -170,6 +184,37 @@ public final class FakeProxmoxServer implements AutoCloseable {
                         form.containsKey("memory") ? Long.parseLong(form.get("memory")) * 1024 * 1024 : vm.maxmemBytes()));
             }
             sendTask(exchange, config.group(1), "qmconfig", vmid); // async variant (POST)
+            return;
+        }
+
+        Matcher fwRules = FW_RULES_PATH.matcher(path);
+        if (fwRules.matches()) {
+            int vmid = Integer.parseInt(fwRules.group(2));
+            List<Map<String, String>> rules = firewallRules.computeIfAbsent(vmid, k -> new java.util.concurrent.CopyOnWriteArrayList<>());
+            if ("GET".equals(method)) {
+                List<Map<String, Object>> out = new ArrayList<>();
+                for (int i = 0; i < rules.size(); i++) {
+                    Map<String, Object> r = new LinkedHashMap<>(rules.get(i));
+                    r.put("pos", i);
+                    out.add(r);
+                }
+                sendJson(exchange, 200, Map.of("data", out));
+            } else if ("POST".equals(method)) {
+                rules.addFirst(form(exchange));
+                sendJson(exchange, 200, Map.of("data", ""));
+            } else if ("DELETE".equals(method) && fwRules.group(3) != null) {
+                rules.remove(Integer.parseInt(fwRules.group(3)));
+                sendJson(exchange, 200, Map.of("data", ""));
+            } else {
+                sendJson(exchange, 404, Map.of());
+            }
+            return;
+        }
+
+        Matcher fwOptions = FW_OPTIONS_PATH.matcher(path);
+        if ("PUT".equals(method) && fwOptions.matches()) {
+            firewallOptions.computeIfAbsent(Integer.parseInt(fwOptions.group(2)), k -> new ConcurrentHashMap<>()).putAll(form(exchange));
+            sendJson(exchange, 200, Map.of("data", ""));
             return;
         }
 

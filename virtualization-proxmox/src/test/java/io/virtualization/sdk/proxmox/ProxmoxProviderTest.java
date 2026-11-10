@@ -13,6 +13,7 @@ import org.junit.jupiter.api.Test;
 
 import io.virtualization.sdk.core.ComputeResources;
 import io.virtualization.sdk.core.image.ProviderOptions;
+import io.virtualization.sdk.core.firewall.WorkloadFirewall;
 import io.virtualization.sdk.core.image.CreateWorkloadOperation;
 import io.virtualization.sdk.core.image.ImageReference;
 import io.virtualization.sdk.core.image.WorkloadSpec;
@@ -176,5 +177,48 @@ class ProxmoxProviderTest {
         var missing = provider.createFromImage(new ImageReference("proxmox", "1234"), spec("y", 10, Map.of()));
         assertThat(missing.await(Duration.ofSeconds(5))).isEqualTo(OperationStatus.FAILED);
         assertThat(missing.error()).get().isInstanceOf(ResourceNotFoundException.class);
+    }
+
+    @Test
+    void applyFirewallReplacesRulesWithDropPolicies() {
+        server.addTemplate(9000, "pve1", "debian-13", "10G");
+        var created = provider.createFromImage(new ImageReference("proxmox", "9000"), spec("i-0fw", 10, Map.of()));
+        assertThat(created.await(Duration.ofSeconds(5))).isEqualTo(OperationStatus.SUCCEEDED);
+        String vmid = created.workloadId().orElseThrow();
+        int id = Integer.parseInt(vmid);
+
+        var in = WorkloadFirewall.Direction.INBOUND;
+        var first = new WorkloadFirewall(List.of(
+                new WorkloadFirewall.Rule(in, "tcp", 22, 22, List.of("10.0.0.0/8", "2001:db8::/32"), "ssh"),
+                new WorkloadFirewall.Rule(in, "tcp", 8000, 8100, List.of("10.0.1.5/32"), null),
+                new WorkloadFirewall.Rule(in, "icmp", 8, null, List.of("0.0.0.0/0"), null),
+                new WorkloadFirewall.Rule(WorkloadFirewall.Direction.OUTBOUND, null, null, null, List.of("0.0.0.0/0"), null)));
+        assertThat(provider.applyFirewall(vmid, first).await(Duration.ofSeconds(5))).isEqualTo(OperationStatus.SUCCEEDED);
+
+        assertThat(server.config(id).get("net0")).endsWith(",firewall=1");
+        assertThat(server.firewallOptions(id)).containsEntry("enable", "1")
+                .containsEntry("policy_in", "DROP").containsEntry("policy_out", "DROP");
+        assertThat(server.firewallRules(id)).hasSize(5); // ssh split into IPv4 + IPv6 rules
+        assertThat(server.firewallRules(id)).extracting(r -> r.get("type") + " " + r.get("proto") + " " + r.get("dport")
+                        + " " + r.getOrDefault("source", r.get("dest")) + " " + r.get("icmp-type"))
+                .containsExactlyInAnyOrder(
+                        "in tcp 22 10.0.0.0/8 null",
+                        "in tcp 22 2001:db8::/32 null",
+                        "in tcp 8000:8100 10.0.1.5/32 null",
+                        "in icmp null 0.0.0.0/0 8",
+                        "out null null 0.0.0.0/0 null");
+        assertThat(server.firewallRules(id)).allSatisfy(r -> assertThat(r).containsEntry("action", "ACCEPT"));
+
+        // Applying again replaces, it does not append.
+        var second = new WorkloadFirewall(List.of(new WorkloadFirewall.Rule(in, "udp", 53, 53, List.of("10.0.0.2/32"), "dns")));
+        assertThat(provider.applyFirewall(vmid, second).await(Duration.ofSeconds(5))).isEqualTo(OperationStatus.SUCCEEDED);
+        assertThat(server.firewallRules(id)).singleElement().satisfies(r -> {
+            assertThat(r).containsEntry("proto", "udp").containsEntry("dport", "53").containsEntry("comment", "dns");
+        });
+        assertThat(provider.applyFirewall(vmid, new WorkloadFirewall(List.of())).await(Duration.ofSeconds(5)))
+                .isEqualTo(OperationStatus.SUCCEEDED);
+        assertThat(server.firewallRules(id)).isEmpty();
+
+        assertThatThrownBy(() -> provider.applyFirewall("999", second)).isInstanceOf(ResourceNotFoundException.class);
     }
 }

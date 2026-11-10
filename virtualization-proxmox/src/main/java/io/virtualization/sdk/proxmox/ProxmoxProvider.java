@@ -17,6 +17,7 @@ import io.virtualization.sdk.proxmox.internal.TaskPoller;
 import com.fasterxml.jackson.databind.JsonNode;
 import io.virtualization.sdk.core.image.WorkloadType;
 import io.virtualization.sdk.core.exception.OperationException;
+import io.virtualization.sdk.core.firewall.WorkloadFirewall;
 import io.virtualization.sdk.core.exception.VirtualizationException;
 import io.virtualization.sdk.core.image.CreateWorkloadHandle;
 import io.virtualization.sdk.core.image.CreateWorkloadOperation;
@@ -43,6 +44,10 @@ import java.util.stream.Collectors;
  * sshAuthorizedKeys}) and grows the boot disk to the {@code diskGb} provider option. The {@code node}
  * provider option picks the target node (default: the template's). The VM is left stopped.
  *
+ * <p>{@link #applyFirewall} uses the VM-level Proxmox firewall: it turns the firewall on for every
+ * NIC, sets both default policies to DROP and replaces the VM's rules with ACCEPT rules. The
+ * datacenter firewall must be enabled for VM firewalls to take effect.
+ *
  * <p>Covers QEMU virtual machines only in this iteration; LXC containers, snapshots, storage and
  * networks are exposed by the Proxmox REST API and mapped by {@code virtualization-core}'s domain
  * model, but {@link VirtualizationProvider} itself has no methods for them yet — extending that
@@ -54,7 +59,8 @@ public final class ProxmoxProvider implements VirtualizationProvider {
     public static final ProviderType TYPE = new ProviderType("proxmox");
 
     private static final ProviderCapabilities CAPABILITIES = ProviderCapabilities.of(
-            Capability.START, Capability.STOP, Capability.REBOOT, Capability.SHUTDOWN, Capability.DESTROY);
+            Capability.START, Capability.STOP, Capability.REBOOT, Capability.SHUTDOWN, Capability.DESTROY,
+            Capability.FIREWALL);
 
     private static final Pattern DISK_SIZE = Pattern.compile("(?:^|,)size=(\\d+)([KMGT])");
 
@@ -144,6 +150,80 @@ public final class ProxmoxProvider implements VirtualizationProvider {
             }
         });
         return handle.operation();
+    }
+
+    @Override
+    public Operation applyFirewall(String id, WorkloadFirewall firewall) {
+        ClusterResourceDto vm = findResource(id);
+        OperationHandle handle = OperationHandle.create("firewall-" + id);
+        Thread.ofVirtual().name(handle.operation().id()).start(() -> {
+            try {
+                applyFirewall(vm.node(), id, firewall);
+                handle.complete();
+            } catch (VirtualizationException e) {
+                handle.fail(e);
+            } catch (RuntimeException e) {
+                handle.fail(new OperationException("Applying the firewall of VM " + id + " failed: " + e.getMessage(), e));
+            }
+        });
+        return handle.operation();
+    }
+
+    private void applyFirewall(String node, String vmid, WorkloadFirewall firewall) {
+        String base = "/nodes/" + node + "/qemu/" + vmid;
+        // Rules only apply to NICs with firewall=1.
+        Map<String, String> nics = new LinkedHashMap<>();
+        client.getData(base + "/config").properties().forEach(e -> {
+            String value = e.getValue().asText();
+            if (e.getKey().matches("net\\d+") && !value.contains("firewall=1")) {
+                nics.put(e.getKey(), value.replace(",firewall=0", "") + ",firewall=1");
+            }
+        });
+        if (!nics.isEmpty()) {
+            awaitIfTask(node, client.postForm(base + "/config", nics));
+        }
+        client.putForm(base + "/firewall/options", Map.of("enable", "1", "policy_in", "DROP", "policy_out", "DROP"));
+
+        // Replace the rules. Deleting shifts positions, so go from the last one up; meanwhile the
+        // DROP policies deny everything (fails closed).
+        List<Integer> positions = new java.util.ArrayList<>();
+        client.getData(base + "/firewall/rules").forEach(r -> positions.add(r.path("pos").asInt()));
+        positions.sort(java.util.Comparator.reverseOrder());
+        for (int pos : positions) {
+            client.deleteForTaskId(base + "/firewall/rules/" + pos);
+        }
+        for (WorkloadFirewall.Rule rule : firewall.rules()) {
+            // Proxmox refuses a source/dest list mixing IPv4 and IPv6: one rule per family.
+            Map<Boolean, List<String>> byFamily = rule.peers().stream().collect(Collectors.partitioningBy(p -> p.contains(":")));
+            for (List<String> peers : byFamily.values()) {
+                if (!peers.isEmpty()) {
+                    client.postForm(base + "/firewall/rules", firewallRule(rule, peers));
+                }
+            }
+        }
+    }
+
+    static Map<String, String> firewallRule(WorkloadFirewall.Rule rule, List<String> peers) {
+        Map<String, String> form = new LinkedHashMap<>();
+        boolean in = rule.direction() == WorkloadFirewall.Direction.INBOUND;
+        form.put("type", in ? "in" : "out");
+        form.put("action", "ACCEPT");
+        form.put("enable", "1");
+        form.put(in ? "source" : "dest", String.join(",", peers));
+        if (rule.protocol() != null) {
+            form.put("proto", rule.protocol().equals("icmpv6") ? "ipv6-icmp" : rule.protocol());
+        }
+        boolean ports = "tcp".equals(rule.protocol()) || "udp".equals(rule.protocol());
+        if (ports && rule.fromPort() != null && !(rule.fromPort() == 0 && rule.toPort() == 65535)) {
+            form.put("dport", rule.fromPort().equals(rule.toPort()) ? String.valueOf(rule.fromPort()) : rule.fromPort() + ":" + rule.toPort());
+        }
+        if (rule.protocol() != null && rule.protocol().startsWith("icmp") && rule.fromPort() != null && rule.fromPort() >= 0) {
+            form.put("icmp-type", String.valueOf(rule.fromPort()));
+        }
+        if (rule.comment() != null) {
+            form.put("comment", rule.comment());
+        }
+        return form;
     }
 
     private String create(String templateId, WorkloadSpec spec, CreateWorkloadHandle handle) {

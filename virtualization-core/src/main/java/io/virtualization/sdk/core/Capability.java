@@ -6,5 +6,7 @@ public enum Capability {
     STOP,
     REBOOT,
     SHUTDOWN,
-    DESTROY
+    DESTROY,
+    /** {@link VirtualizationProvider#applyFirewall}. */
+    FIREWALL
 }
