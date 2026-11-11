@@ -205,7 +205,7 @@ class ProxmoxProviderTest {
                         "in tcp 22 10.0.0.0/8 null",
                         "in tcp 22 2001:db8::/32 null",
                         "in tcp 8000:8100 10.0.1.5/32 null",
-                        "in icmp null 0.0.0.0/0 8",
+                        "in icmp null 0.0.0.0/0 echo-request",
                         "out null null 0.0.0.0/0 null");
         assertThat(server.firewallRules(id)).allSatisfy(r -> assertThat(r).containsEntry("action", "ACCEPT"));
 

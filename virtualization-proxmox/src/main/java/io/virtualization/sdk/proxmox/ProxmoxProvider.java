@@ -196,13 +196,27 @@ public final class ProxmoxProvider implements VirtualizationProvider {
             // Proxmox refuses a source/dest list mixing IPv4 and IPv6: one rule per family.
             Map<Boolean, List<String>> byFamily = rule.peers().stream().collect(Collectors.partitioningBy(p -> p.contains(":")));
             for (List<String> peers : byFamily.values()) {
-                if (!peers.isEmpty()) {
-                    client.postForm(base + "/firewall/rules", firewallRule(rule, peers));
+                Map<String, String> form = peers.isEmpty() ? null : firewallRule(rule, peers);
+                if (form != null) {
+                    client.postForm(base + "/firewall/rules", form);
                 }
             }
         }
     }
 
+    /** Proxmox only takes ICMP types by name. */
+    private static final Map<Integer, String> ICMP_TYPES = Map.ofEntries(
+            Map.entry(0, "echo-reply"), Map.entry(3, "destination-unreachable"), Map.entry(4, "source-quench"),
+            Map.entry(5, "redirect"), Map.entry(8, "echo-request"), Map.entry(9, "router-advertisement"),
+            Map.entry(10, "router-solicitation"), Map.entry(11, "time-exceeded"), Map.entry(12, "parameter-problem"),
+            Map.entry(13, "timestamp-request"), Map.entry(14, "timestamp-reply"));
+    private static final Map<Integer, String> ICMPV6_TYPES = Map.ofEntries(
+            Map.entry(1, "destination-unreachable"), Map.entry(2, "packet-too-big"), Map.entry(3, "time-exceeded"),
+            Map.entry(4, "parameter-problem"), Map.entry(128, "echo-request"), Map.entry(129, "echo-reply"),
+            Map.entry(133, "router-solicitation"), Map.entry(134, "router-advertisement"),
+            Map.entry(135, "neighbour-solicitation"), Map.entry(136, "neighbour-advertisement"), Map.entry(137, "redirect"));
+
+    /** The Proxmox rule, or {@code null} if it cannot be expressed (then it is left out: narrower, never wider). */
     static Map<String, String> firewallRule(WorkloadFirewall.Rule rule, List<String> peers) {
         Map<String, String> form = new LinkedHashMap<>();
         boolean in = rule.direction() == WorkloadFirewall.Direction.INBOUND;
@@ -218,7 +232,11 @@ public final class ProxmoxProvider implements VirtualizationProvider {
             form.put("dport", rule.fromPort().equals(rule.toPort()) ? String.valueOf(rule.fromPort()) : rule.fromPort() + ":" + rule.toPort());
         }
         if (rule.protocol() != null && rule.protocol().startsWith("icmp") && rule.fromPort() != null && rule.fromPort() >= 0) {
-            form.put("icmp-type", String.valueOf(rule.fromPort()));
+            String type = (rule.protocol().equals("icmp") ? ICMP_TYPES : ICMPV6_TYPES).get(rule.fromPort());
+            if (type == null) {
+                return null;
+            }
+            form.put("icmp-type", type);
         }
         if (rule.comment() != null) {
             form.put("comment", rule.comment());
