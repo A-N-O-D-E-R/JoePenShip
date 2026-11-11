@@ -101,6 +101,11 @@ public final class ProxmoxApiClient implements AutoCloseable {
                 .collect(Collectors.joining("&"));
     }
 
+    /** DELETEs and returns the raw {@code "data"} field (a task UPID or {@code null}). */
+    public JsonNode deleteData(String path) {
+        return requestForData(HttpRequest.newBuilder(resolve(path)).DELETE());
+    }
+
     /** DELETEs and returns the Proxmox task UPID from the response's {@code "data"} field. */
     public String deleteForTaskId(String path) {
         JsonNode data = requestForData(HttpRequest.newBuilder(resolve(path)).DELETE());

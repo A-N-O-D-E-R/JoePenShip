@@ -8,5 +8,7 @@ public enum Capability {
     SHUTDOWN,
     DESTROY,
     /** {@link VirtualizationProvider#applyFirewall}. */
-    FIREWALL
+    FIREWALL,
+    /** {@link VirtualizationProvider#attachVolume} and {@link VirtualizationProvider#detachVolume}. */
+    VOLUMES
 }

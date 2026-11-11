@@ -55,6 +55,8 @@ class ProxmoxLabIT {
                 .providerOptions(ProviderOptions.of(options))
                 .build();
         var created = provider.createFromImage(new ImageReference("proxmox", template), spec);
+        String volumeToCheck = null;
+        ProxmoxStorageProvider volumeStorage = null;
         String vmid = null;
         try {
             assertThat(created.await(Duration.ofMinutes(5))).as(created.error().map(Throwable::getMessage).orElse(""))
@@ -98,6 +100,32 @@ class ProxmoxLabIT {
 
             assertThat(provider.start(vmid).await(Duration.ofMinutes(2))).isEqualTo(OperationStatus.SUCCEEDED);
             assertThat(provider.getVirtualMachine(vmid).state()).isEqualTo(VirtualMachineState.RUNNING);
+
+            // A standalone volume, hot-plugged into the running VM, grown, detached: it outlives the VM.
+            var storage = new ProxmoxStorageProvider(client, null, config.taskPollInterval());
+            String volName = "lab-" + Long.toHexString(System.nanoTime());
+            String volid = storage.createVolume("local", new io.virtualization.sdk.storage.VolumeSpec(volName,
+                    io.virtualization.sdk.storage.VolumeContentType.BLOCK, "1G", null)).config().get("volid");
+            try {
+                var attached = provider.attachVolume(vmid, volid, "scsi1");
+                assertThat(attached.await(Duration.ofMinutes(1))).as(attached.error().map(Throwable::getMessage).orElse(""))
+                        .isEqualTo(OperationStatus.SUCCEEDED);
+                assertThat(client.getData(base + "/config").path("scsi1").asText()).startsWith(volid);
+                assertThat(storage.resizeVolume("local", volName, "2G").size()).isEqualTo("2G");
+                var detached = provider.detachVolume(vmid, volid);
+                assertThat(detached.await(Duration.ofMinutes(1))).as(detached.error().map(Throwable::getMessage).orElse(""))
+                        .isEqualTo(OperationStatus.SUCCEEDED);
+                JsonNode after = client.getData(base + "/config");
+                assertThat(after.has("scsi1")).isFalse();
+                assertThat(after.toString()).doesNotContain(volid); // not even as unusedN
+                assertThat(provider.attachVolume(vmid, volid, "scsi2").await(Duration.ofMinutes(1))).isEqualTo(OperationStatus.SUCCEEDED);
+                volumeToCheck = volName; // left attached: destroying the VM must keep it
+                volumeStorage = storage;
+            } catch (RuntimeException | AssertionError e) {
+                provider.detachVolume(vmid, volid).await(Duration.ofMinutes(1));
+                storage.deleteVolume("local", volName);
+                throw e;
+            }
             assertThat(provider.stop(vmid).await(Duration.ofMinutes(2))).isEqualTo(OperationStatus.SUCCEEDED);
         } finally {
             String id = vmid != null ? vmid : provider.listVirtualMachines().stream()
@@ -107,6 +135,12 @@ class ProxmoxLabIT {
                     provider.stop(id).await(Duration.ofMinutes(2));
                 }
                 assertThat(provider.destroy(id).await(Duration.ofMinutes(2))).isEqualTo(OperationStatus.SUCCEEDED);
+            }
+            if (volumeToCheck != null) {
+                assertThat(volumeStorage.getVolume("local", volumeToCheck).size()).isEqualTo("2G"); // survived the VM
+                volumeStorage.deleteVolume("local", volumeToCheck);
+                String gone = volumeToCheck;
+                assertThat(volumeStorage.listVolumes("local")).noneMatch(v -> v.name().equals(gone));
             }
             client.close();
         }

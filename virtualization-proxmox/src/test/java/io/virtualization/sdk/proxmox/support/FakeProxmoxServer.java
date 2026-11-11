@@ -43,6 +43,14 @@ public final class FakeProxmoxServer implements AutoCloseable {
     private volatile int pollsBeforeCompletion = 0;
     private volatile boolean nextTaskFails = false;
     private final Map<Integer, Map<String, String>> configs = new ConcurrentHashMap<>();
+    /** Standalone volumes: volid -> size ("10G"). Storages: "local" (dir) and "ceph" (rbd). */
+    private final Map<String, String> volumes = new ConcurrentHashMap<>();
+    private static final Pattern STORAGE_CONTENT_PATH = Pattern.compile("/api2/json/nodes/([^/]+)/storage/([^/]+)/content(?:/(.+))?");
+
+    public Map<String, String> volumes() {
+        return volumes;
+    }
+
     /** What /cluster/resources reports instead of the real status (Proxmox caches it for seconds). */
     private final Map<Integer, String> cachedStatus = new ConcurrentHashMap<>();
     private final Map<Integer, List<Map<String, String>>> firewallRules = new ConcurrentHashMap<>();
@@ -185,7 +193,16 @@ public final class FakeProxmoxServer implements AutoCloseable {
                 return;
             }
             Map<String, String> form = form(exchange);
-            configs.computeIfAbsent(vmid, k -> new ConcurrentHashMap<>()).putAll(form);
+            Map<String, String> vmConfig = configs.computeIfAbsent(vmid, k -> new ConcurrentHashMap<>());
+            String delete = form.remove("delete");
+            if (delete != null) {
+                for (String key : delete.split(",")) {
+                    vmConfig.remove(key.trim());
+                }
+            }
+            // Attaching a bare volid: Proxmox records it with the volume's size.
+            form.replaceAll((k, v) -> volumes.containsKey(v) ? v + ",size=" + volumes.get(v) : v);
+            vmConfig.putAll(form);
             if (form.containsKey("cores") || form.containsKey("memory")) {
                 VmState vm = vms.get(vmid);
                 vms.put(vmid, new VmState(vm.node(), vm.name(), vm.status(),
@@ -193,6 +210,52 @@ public final class FakeProxmoxServer implements AutoCloseable {
                         form.containsKey("memory") ? Long.parseLong(form.get("memory")) * 1024 * 1024 : vm.maxmemBytes()));
             }
             sendTask(exchange, config.group(1), "qmconfig", vmid); // async variant (POST)
+            return;
+        }
+
+        if ("GET".equals(method) && path.equals("/api2/json/nodes")) {
+            sendJson(exchange, 200, Map.of("data", List.of(Map.of("node", "pve1", "status", "online"))));
+            return;
+        }
+        if ("GET".equals(method) && path.matches("/api2/json/nodes/[^/]+/storage")) {
+            sendJson(exchange, 200, Map.of("data", List.of(
+                    Map.of("storage", "local", "type", "dir", "content", "images,iso", "active", 1, "shared", 0),
+                    Map.of("storage", "ceph", "type", "rbd", "content", "images", "active", 1, "shared", 1))));
+            return;
+        }
+        Matcher content = STORAGE_CONTENT_PATH.matcher(exchange.getRequestURI().getRawPath());
+        if (content.matches()) {
+            String storage = content.group(2);
+            if ("GET".equals(method) && content.group(3) == null) {
+                String vmid = java.util.Optional.ofNullable(exchange.getRequestURI().getQuery()).stream()
+                        .flatMap(q -> java.util.Arrays.stream(q.split("&"))).filter(p -> p.startsWith("vmid="))
+                        .map(p -> p.substring(5)).findFirst().orElse(null);
+                List<Map<String, Object>> out = new ArrayList<>();
+                volumes.forEach((volid, size) -> {
+                    boolean mine = volid.startsWith(storage + ":");
+                    if (mine && (vmid == null || volid.contains("vm-" + vmid + "-"))) {
+                        out.add(Map.of("volid", volid, "size", Long.parseLong(size.replace("G", "")) * 1024L * 1024 * 1024));
+                    }
+                });
+                sendJson(exchange, 200, Map.of("data", out));
+            } else if ("POST".equals(method)) {
+                Map<String, String> form = form(exchange);
+                String volid = storage.equals("local") ? "local:" + form.get("vmid") + "/" + form.get("filename") : storage + ":" + form.get("filename");
+                if (volumes.putIfAbsent(volid, form.get("size")) != null) {
+                    sendJson(exchange, 500, Map.of("message", "volume " + volid + " already exists", "data", ""));
+                    return;
+                }
+                sendJson(exchange, 200, Map.of("data", volid));
+            } else if ("DELETE".equals(method) && content.group(3) != null) {
+                String volid = java.net.URLDecoder.decode(content.group(3), java.nio.charset.StandardCharsets.UTF_8);
+                if (volumes.remove(volid) == null) {
+                    sendJson(exchange, 404, Map.of());
+                    return;
+                }
+                sendTask(exchange, content.group(1), "imgdel", 0); // async, like PVE for most storages
+            } else {
+                sendJson(exchange, 404, Map.of());
+            }
             return;
         }
 
@@ -239,7 +302,10 @@ public final class FakeProxmoxServer implements AutoCloseable {
             int vmid = Integer.parseInt(resize.group(2));
             Map<String, String> form = form(exchange);
             String disk = form.get("disk");
-            configs.get(vmid).computeIfPresent(disk, (k, v) -> v.replaceAll("size=[^,]+", "size=" + form.get("size")));
+            configs.get(vmid).computeIfPresent(disk, (k, v) -> {
+                volumes.computeIfPresent(v.split(",")[0], (id, size) -> form.get("size"));
+                return v.replaceAll("size=[^,]+", "size=" + form.get("size"));
+            });
             sendJson(exchange, 200, Map.of("data", "")); // synchronous, like PVE 7
             return;
         }
