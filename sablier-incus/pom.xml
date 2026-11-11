@@ -10,7 +10,7 @@
     <version>0.1.0-SNAPSHOT</version>
   </parent>
 
-  <groupId>io.sablier</groupId>
+  <groupId>io.github.a-n-o-d-e-r</groupId>
   <artifactId>sablier-incus</artifactId>
 
   <name>Sablier Java :: Incus</name>
@@ -18,7 +18,7 @@
 
   <dependencies>
     <dependency>
-      <groupId>io.sablier</groupId>
+      <groupId>io.github.a-n-o-d-e-r</groupId>
       <artifactId>sablier-core</artifactId>
       <version>${project.version}</version>
     </dependency>
