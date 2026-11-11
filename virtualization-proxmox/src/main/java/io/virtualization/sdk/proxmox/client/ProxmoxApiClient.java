@@ -14,14 +14,18 @@ import javax.net.ssl.TrustManager;
 import javax.net.ssl.X509TrustManager;
 import java.io.IOException;
 import java.net.URI;
+import java.net.URLEncoder;
 import java.net.http.HttpClient;
 import java.net.http.HttpRequest;
 import java.net.http.HttpResponse;
 import java.security.GeneralSecurityException;
 import java.security.SecureRandom;
+import java.nio.charset.StandardCharsets;
 import java.security.cert.X509Certificate;
 import java.util.List;
+import java.util.Map;
 import java.util.Objects;
+import java.util.stream.Collectors;
 
 /**
  * Low-level HTTP + JSON client for the Proxmox VE REST API ({@code /api2/json/...}).
@@ -68,6 +72,35 @@ public final class ProxmoxApiClient implements AutoCloseable {
         return data.asText();
     }
 
+    /** GETs and returns the raw {@code "data"} field (for endpoints whose shape varies, e.g. VM config). */
+    public JsonNode getData(String path) {
+        return requestForData(HttpRequest.newBuilder(resolve(path)).GET());
+    }
+
+    /**
+     * POSTs {@code form} as {@code application/x-www-form-urlencoded} and returns the {@code "data"}
+     * field: a task UPID for asynchronous endpoints, {@code null} JSON for synchronous ones.
+     */
+    public JsonNode postForm(String path, Map<String, String> form) {
+        return requestForData(HttpRequest.newBuilder(resolve(path))
+                .header("Content-Type", "application/x-www-form-urlencoded")
+                .POST(HttpRequest.BodyPublishers.ofString(formEncode(form))));
+    }
+
+    /** Same as {@link #postForm} with PUT. */
+    public JsonNode putForm(String path, Map<String, String> form) {
+        return requestForData(HttpRequest.newBuilder(resolve(path))
+                .header("Content-Type", "application/x-www-form-urlencoded")
+                .PUT(HttpRequest.BodyPublishers.ofString(formEncode(form))));
+    }
+
+    private static String formEncode(Map<String, String> form) {
+        return form.entrySet().stream()
+                .map(e -> URLEncoder.encode(e.getKey(), StandardCharsets.UTF_8) + "="
+                        + URLEncoder.encode(e.getValue(), StandardCharsets.UTF_8))
+                .collect(Collectors.joining("&"));
+    }
+
     /** DELETEs and returns the Proxmox task UPID from the response's {@code "data"} field. */
     public String deleteForTaskId(String path) {
         JsonNode data = requestForData(HttpRequest.newBuilder(resolve(path)).DELETE());
@@ -105,8 +138,15 @@ public final class ProxmoxApiClient implements AutoCloseable {
             case 401 -> throw new AuthenticationException("Proxmox rejected the API token for " + target);
             case 403 -> throw new AuthorizationException("Proxmox denied access for " + target);
             case 404 -> throw new ResourceNotFoundException("Proxmox resource not found: " + target);
-            default -> throw new OperationException("Proxmox API returned HTTP " + code + " for " + target);
+            // Proxmox explains 4xx/5xx failures in the body (e.g. parameter errors, "VM 101 already exists").
+            default -> throw new OperationException("Proxmox API returned HTTP " + code + " for " + target + ": "
+                    + abbreviate(response.body()));
         }
+    }
+
+    private static String abbreviate(String body) {
+        String b = body == null ? "" : body.strip();
+        return b.length() <= 500 ? b : b.substring(0, 500) + "…";
     }
 
     private JsonNode extractData(String body) {

@@ -1,5 +1,6 @@
 package io.virtualization.sdk.core;
 
+import io.virtualization.sdk.core.firewall.WorkloadFirewall;
 import io.virtualization.sdk.core.exception.ResourceNotFoundException;
 import io.virtualization.sdk.core.exception.UnsupportedCapabilityException;
 import io.virtualization.sdk.core.image.CreateWorkloadOperation;
@@ -67,5 +68,16 @@ public interface VirtualizationProvider {
      */
     default CreateWorkloadOperation createFromImage(ImageReference image, WorkloadSpec spec, ImageAvailabilityPolicy policy) {
         throw new UnsupportedCapabilityException(type().id() + " does not support creating workloads from images");
+    }
+
+    /**
+     * Replaces the firewall of a virtual machine with {@code firewall} (security-group semantics,
+     * see {@link WorkloadFirewall}).
+     *
+     * @throws UnsupportedCapabilityException if this provider does not support {@link Capability#FIREWALL}
+     * @throws ResourceNotFoundException if no virtual machine with the given id exists
+     */
+    default Operation applyFirewall(String id, WorkloadFirewall firewall) {
+        throw new UnsupportedCapabilityException(type().id() + " does not support workload firewalls");
     }
 }

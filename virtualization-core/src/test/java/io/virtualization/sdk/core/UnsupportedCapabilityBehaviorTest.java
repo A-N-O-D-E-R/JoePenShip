@@ -36,4 +36,22 @@ class UnsupportedCapabilityBehaviorTest {
 
         assertThatThrownBy(() -> provider.createFromImage(image, spec)).isInstanceOf(UnsupportedCapabilityException.class);
     }
+
+    @Test
+    void applyFirewallDefaultsToUnsupported() {
+        VirtualizationProvider provider = new FakeVirtualizationProvider(ProviderCapabilities.of(Capability.START));
+        var firewall = new io.virtualization.sdk.core.firewall.WorkloadFirewall(java.util.List.of());
+
+        assertThatThrownBy(() -> provider.applyFirewall("vm-1", firewall)).isInstanceOf(UnsupportedCapabilityException.class);
+    }
+
+    @Test
+    void firewallRulesValidateTheirShape() {
+        assertThatThrownBy(() -> new io.virtualization.sdk.core.firewall.WorkloadFirewall.Rule(
+                io.virtualization.sdk.core.firewall.WorkloadFirewall.Direction.INBOUND, "tcp", 443, 80,
+                java.util.List.of("0.0.0.0/0"), null)).isInstanceOf(IllegalArgumentException.class);
+        assertThatThrownBy(() -> new io.virtualization.sdk.core.firewall.WorkloadFirewall.Rule(
+                io.virtualization.sdk.core.firewall.WorkloadFirewall.Direction.INBOUND, null, null, null,
+                java.util.List.of(), null)).isInstanceOf(IllegalArgumentException.class);
+    }
 }

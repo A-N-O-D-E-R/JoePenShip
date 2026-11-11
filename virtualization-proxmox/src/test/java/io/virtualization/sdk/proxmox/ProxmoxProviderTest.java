@@ -11,8 +11,19 @@ import org.junit.jupiter.api.AfterEach;
 import org.junit.jupiter.api.BeforeEach;
 import org.junit.jupiter.api.Test;
 
+import io.virtualization.sdk.core.ComputeResources;
+import io.virtualization.sdk.core.image.ProviderOptions;
+import io.virtualization.sdk.core.firewall.WorkloadFirewall;
+import io.virtualization.sdk.core.image.CreateWorkloadOperation;
+import io.virtualization.sdk.core.image.ImageReference;
+import io.virtualization.sdk.core.image.WorkloadSpec;
+import io.virtualization.sdk.core.image.WorkloadType;
+
+import java.net.URLDecoder;
+import java.nio.charset.StandardCharsets;
 import java.time.Duration;
 import java.util.List;
+import java.util.Map;
 
 import static org.assertj.core.api.Assertions.assertThat;
 import static org.assertj.core.api.Assertions.assertThatThrownBy;
@@ -92,5 +103,148 @@ class ProxmoxProviderTest {
     @Test
     void lifecycleOperationOnUnknownVmThrowsResourceNotFound() {
         assertThatThrownBy(() -> provider.start("999")).isInstanceOf(ResourceNotFoundException.class);
+    }
+
+    private static WorkloadSpec spec(String name, long diskGb, Map<String, String> configuration) {
+        return WorkloadSpec.builder(name, WorkloadType.VIRTUAL_MACHINE)
+                .resources(new ComputeResources(2, 4096))
+                .configuration(configuration)
+                .labels(Map.of("stratus-instance", name))
+                .providerOptions(ProviderOptions.of(Map.of("node", "pve2", "diskGb", diskGb)))
+                .build();
+    }
+
+    @Test
+    void createFromImageClonesConfiguresAndGrowsTheDisk() {
+        server.addTemplate(9000, "pve1", "debian-13", "10G");
+        String key = "ssh-ed25519 AAAAC3Nza test@stratus";
+
+        CreateWorkloadOperation op = provider.createFromImage(new ImageReference("proxmox", "9000"),
+                spec("i-0abc", 20, Map.of("sshAuthorizedKeys", key)));
+
+        assertThat(op.await(Duration.ofSeconds(5))).as(op.error().map(Throwable::getMessage).orElse("")).isEqualTo(OperationStatus.SUCCEEDED);
+        String vmid = op.workloadId().orElseThrow();
+        assertThat(vmid).isEqualTo("9001");
+        VirtualMachine vm = provider.getVirtualMachine(vmid);
+        assertThat(vm.name()).isEqualTo("i-0abc");
+        assertThat(vm.state()).isEqualTo(VirtualMachineState.STOPPED);
+        assertThat(vm.resources().cpuCores()).isEqualTo(2);
+        assertThat(vm.resources().memoryMb()).isEqualTo(4096);
+
+        Map<String, String> config = server.config(9001);
+        // Proxmox stores sshkeys URL-encoded; decoding gives the key back.
+        assertThat(URLDecoder.decode(config.get("sshkeys"), StandardCharsets.UTF_8)).isEqualTo(key + "\n");
+        assertThat(config.get("sshkeys")).doesNotContain("+").contains("%20");
+        assertThat(config.get("scsi0")).endsWith("size=20G"); // boot order skips the cloud-init CD-ROM
+        assertThat(config.get("description")).isEqualTo("stratus-instance=i-0abc");
+    }
+
+    @Test
+    void createFromImageNeverShrinksAndRetriesAnIdCollision() {
+        server.addTemplate(9000, "pve1", "debian-13", "30G");
+        server.nextIdCollides(1);
+
+        CreateWorkloadOperation op = provider.createFromImage(new ImageReference("proxmox", "9000"), spec("i-0def", 20, Map.of()));
+
+        assertThat(op.await(Duration.ofSeconds(5))).as(op.error().map(Throwable::getMessage).orElse("")).isEqualTo(OperationStatus.SUCCEEDED);
+        assertThat(server.config(Integer.parseInt(op.workloadId().orElseThrow())).get("scsi0")).endsWith("size=30G");
+    }
+
+    @Test
+    void createFromImageReusesTheVmOfAnInterruptedAttempt() {
+        server.addTemplate(9000, "pve1", "debian-13", "10G");
+        var first = provider.createFromImage(new ImageReference("proxmox", "9000"), spec("i-0retry", 10, Map.of()));
+        assertThat(first.await(Duration.ofSeconds(5))).isEqualTo(OperationStatus.SUCCEEDED);
+
+        var again = provider.createFromImage(new ImageReference("proxmox", "9000"), spec("i-0retry", 10, Map.of()));
+
+        assertThat(again.await(Duration.ofSeconds(5))).isEqualTo(OperationStatus.SUCCEEDED);
+        assertThat(again.workloadId()).isEqualTo(first.workloadId());
+        assertThat(provider.listVirtualMachines()).filteredOn(vm -> vm.name().equals("i-0retry")).hasSize(1);
+    }
+
+    @Test
+    void createFromImageFailsWhenTheCloneTaskFails() {
+        server.addTemplate(9000, "pve1", "debian-13", "10G");
+        server.nextTaskFails();
+
+        var op = provider.createFromImage(new ImageReference("proxmox", "9000"), spec("i-0fail", 10, Map.of()));
+
+        assertThat(op.await(Duration.ofSeconds(5))).isEqualTo(OperationStatus.FAILED);
+        assertThat(op.error()).isPresent();
+        assertThatThrownBy(() -> provider.createFromImage(new ImageReference("proxmox", "debian"), spec("x", 10, Map.of())))
+                .isInstanceOf(IllegalArgumentException.class);
+        var missing = provider.createFromImage(new ImageReference("proxmox", "1234"), spec("y", 10, Map.of()));
+        assertThat(missing.await(Duration.ofSeconds(5))).isEqualTo(OperationStatus.FAILED);
+        assertThat(missing.error()).get().isInstanceOf(ResourceNotFoundException.class);
+    }
+
+    @Test
+    void applyFirewallReplacesRulesWithDropPolicies() {
+        server.addTemplate(9000, "pve1", "debian-13", "10G");
+        var created = provider.createFromImage(new ImageReference("proxmox", "9000"), spec("i-0fw", 10, Map.of()));
+        assertThat(created.await(Duration.ofSeconds(5))).isEqualTo(OperationStatus.SUCCEEDED);
+        String vmid = created.workloadId().orElseThrow();
+        int id = Integer.parseInt(vmid);
+
+        var in = WorkloadFirewall.Direction.INBOUND;
+        var first = new WorkloadFirewall(List.of(
+                new WorkloadFirewall.Rule(in, "tcp", 22, 22, List.of("10.0.0.0/8", "2001:db8::/32"), "ssh"),
+                new WorkloadFirewall.Rule(in, "tcp", 8000, 8100, List.of("10.0.1.5/32"), null),
+                new WorkloadFirewall.Rule(in, "icmp", 8, null, List.of("0.0.0.0/0"), null),
+                new WorkloadFirewall.Rule(WorkloadFirewall.Direction.OUTBOUND, null, null, null, List.of("0.0.0.0/0"), null)));
+        assertThat(provider.applyFirewall(vmid, first).await(Duration.ofSeconds(5))).isEqualTo(OperationStatus.SUCCEEDED);
+
+        assertThat(server.config(id).get("net0")).endsWith(",firewall=1");
+        assertThat(server.firewallOptions(id)).containsEntry("enable", "1")
+                .containsEntry("policy_in", "DROP").containsEntry("policy_out", "DROP");
+        assertThat(server.firewallRules(id)).hasSize(5); // ssh split into IPv4 + IPv6 rules
+        assertThat(server.firewallRules(id)).extracting(r -> r.get("type") + " " + r.get("proto") + " " + r.get("dport")
+                        + " " + r.getOrDefault("source", r.get("dest")) + " " + r.get("icmp-type"))
+                .containsExactlyInAnyOrder(
+                        "in tcp 22 10.0.0.0/8 null",
+                        "in tcp 22 2001:db8::/32 null",
+                        "in tcp 8000:8100 10.0.1.5/32 null",
+                        "in icmp null 0.0.0.0/0 echo-request",
+                        "out null null 0.0.0.0/0 null");
+        assertThat(server.firewallRules(id)).allSatisfy(r -> assertThat(r).containsEntry("action", "ACCEPT"));
+
+        // Applying again replaces, it does not append.
+        var second = new WorkloadFirewall(List.of(new WorkloadFirewall.Rule(in, "udp", 53, 53, List.of("10.0.0.2/32"), "dns")));
+        assertThat(provider.applyFirewall(vmid, second).await(Duration.ofSeconds(5))).isEqualTo(OperationStatus.SUCCEEDED);
+        assertThat(server.firewallRules(id)).singleElement().satisfies(r -> {
+            assertThat(r).containsEntry("proto", "udp").containsEntry("dport", "53").containsEntry("comment", "dns");
+        });
+        assertThat(provider.applyFirewall(vmid, new WorkloadFirewall(List.of())).await(Duration.ofSeconds(5)))
+                .isEqualTo(OperationStatus.SUCCEEDED);
+        assertThat(server.firewallRules(id)).isEmpty();
+
+        assertThatThrownBy(() -> provider.applyFirewall("999", second)).isInstanceOf(ResourceNotFoundException.class);
+    }
+
+    @Test
+    void getVirtualMachineReadsTheLiveStateNotTheClusterCache() {
+        server.staleClusterStatus(100, "stopped"); // right after a start, the cache can still say stopped
+
+        assertThat(provider.getVirtualMachine("100").state()).isEqualTo(VirtualMachineState.RUNNING);
+        assertThat(provider.listVirtualMachines().getFirst().state()).isEqualTo(VirtualMachineState.STOPPED);
+    }
+
+    @Test
+    void createFromImageConfiguresTheGuestNetwork() {
+        server.addTemplate(9000, "pve1", "debian-13", "10G");
+        var spec = WorkloadSpec.builder("i-0net", WorkloadType.VIRTUAL_MACHINE)
+                .networks(List.of("ip=172.31.0.4/20,gw=172.31.0.1"))
+                .providerOptions(ProviderOptions.of(Map.of("nameserver", "172.31.0.2")))
+                .build();
+
+        var op = provider.createFromImage(new ImageReference("proxmox", "9000"), spec);
+
+        assertThat(op.await(Duration.ofSeconds(5))).isEqualTo(OperationStatus.SUCCEEDED);
+        Map<String, String> config = server.config(Integer.parseInt(op.workloadId().orElseThrow()));
+        assertThat(config).containsEntry("ipconfig0", "ip=172.31.0.4/20,gw=172.31.0.1").containsEntry("nameserver", "172.31.0.2");
+        assertThatThrownBy(() -> provider.createFromImage(new ImageReference("proxmox", "9000"),
+                WorkloadSpec.builder("bad", WorkloadType.VIRTUAL_MACHINE).networks(List.of("vmbr0")).build()))
+                .isInstanceOf(IllegalArgumentException.class);
     }
 }
