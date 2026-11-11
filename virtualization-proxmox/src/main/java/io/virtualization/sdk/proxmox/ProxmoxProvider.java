@@ -95,9 +95,16 @@ public final class ProxmoxProvider implements VirtualizationProvider {
                 .toList();
     }
 
+    /**
+     * The VM with its live state. {@code /cluster/resources} is a cache refreshed every few
+     * seconds (it can still say "stopped" right after a start), so the state comes from the VM's
+     * own {@code status/current}. {@link #listVirtualMachines} keeps the cached view.
+     */
     @Override
     public VirtualMachine getVirtualMachine(String id) {
-        return DomainMapper.toVirtualMachine(findResource(id));
+        ClusterResourceDto r = findResource(id);
+        String status = client.getData("/nodes/" + r.node() + "/qemu/" + id + "/status/current").path("status").asText(r.status());
+        return DomainMapper.toVirtualMachine(new ClusterResourceDto(r.type(), r.node(), r.vmid(), r.name(), status, r.maxcpu(), r.maxmem()));
     }
 
     @Override

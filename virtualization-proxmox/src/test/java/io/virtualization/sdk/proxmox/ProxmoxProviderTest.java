@@ -221,4 +221,12 @@ class ProxmoxProviderTest {
 
         assertThatThrownBy(() -> provider.applyFirewall("999", second)).isInstanceOf(ResourceNotFoundException.class);
     }
+
+    @Test
+    void getVirtualMachineReadsTheLiveStateNotTheClusterCache() {
+        server.staleClusterStatus(100, "stopped"); // right after a start, the cache can still say stopped
+
+        assertThat(provider.getVirtualMachine("100").state()).isEqualTo(VirtualMachineState.RUNNING);
+        assertThat(provider.listVirtualMachines().getFirst().state()).isEqualTo(VirtualMachineState.STOPPED);
+    }
 }

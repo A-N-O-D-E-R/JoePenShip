@@ -31,6 +31,7 @@ public final class FakeProxmoxServer implements AutoCloseable {
     private static final Pattern CONFIG_PATH = Pattern.compile("/api2/json/nodes/([^/]+)/qemu/(\\d+)/config");
     private static final Pattern RESIZE_PATH = Pattern.compile("/api2/json/nodes/([^/]+)/qemu/(\\d+)/resize");
     private static final Pattern FW_RULES_PATH = Pattern.compile("/api2/json/nodes/([^/]+)/qemu/(\\d+)/firewall/rules(?:/(\\d+))?");
+    private static final Pattern STATUS_CURRENT_PATH = Pattern.compile("/api2/json/nodes/([^/]+)/qemu/(\\d+)/status/current");
     private static final Pattern FW_OPTIONS_PATH = Pattern.compile("/api2/json/nodes/([^/]+)/qemu/(\\d+)/firewall/options");
     private static final Pattern TASK_STATUS_PATH = Pattern.compile("/api2/json/nodes/([^/]+)/tasks/(.+)/status");
 
@@ -42,6 +43,8 @@ public final class FakeProxmoxServer implements AutoCloseable {
     private volatile int pollsBeforeCompletion = 0;
     private volatile boolean nextTaskFails = false;
     private final Map<Integer, Map<String, String>> configs = new ConcurrentHashMap<>();
+    /** What /cluster/resources reports instead of the real status (Proxmox caches it for seconds). */
+    private final Map<Integer, String> cachedStatus = new ConcurrentHashMap<>();
     private final Map<Integer, List<Map<String, String>>> firewallRules = new ConcurrentHashMap<>();
     private final Map<Integer, Map<String, String>> firewallOptions = new ConcurrentHashMap<>();
     private final java.util.concurrent.atomic.AtomicInteger nextIdCollisions = new java.util.concurrent.atomic.AtomicInteger();
@@ -91,6 +94,11 @@ public final class FakeProxmoxServer implements AutoCloseable {
         configs.put(vmid, config);
     }
 
+    /** Makes /cluster/resources report {@code status} for the VM, while status/current stays truthful. */
+    public void staleClusterStatus(int vmid, String status) {
+        cachedStatus.put(vmid, status);
+    }
+
     /** The VM firewall rules, top first (Proxmox inserts new rules at position 0). */
     public List<Map<String, String>> firewallRules(int vmid) {
         return firewallRules.getOrDefault(vmid, List.of());
@@ -132,7 +140,8 @@ public final class FakeProxmoxServer implements AutoCloseable {
 
         if ("GET".equals(method) && path.equals("/api2/json/cluster/resources")) {
             List<Map<String, Object>> resources = new ArrayList<>();
-            vms.forEach((vmid, vm) -> resources.add(toResourceJson(vmid, vm)));
+            vms.forEach((vmid, vm) -> resources.add(toResourceJson(vmid,
+                    cachedStatus.containsKey(vmid) ? new VmState(vm.node(), vm.name(), cachedStatus.get(vmid), vm.maxcpu(), vm.maxmemBytes()) : vm)));
             sendJson(exchange, 200, Map.of("data", resources));
             return;
         }
@@ -184,6 +193,13 @@ public final class FakeProxmoxServer implements AutoCloseable {
                         form.containsKey("memory") ? Long.parseLong(form.get("memory")) * 1024 * 1024 : vm.maxmemBytes()));
             }
             sendTask(exchange, config.group(1), "qmconfig", vmid); // async variant (POST)
+            return;
+        }
+
+        Matcher current = STATUS_CURRENT_PATH.matcher(path);
+        if ("GET".equals(method) && current.matches()) {
+            VmState vm = vms.get(Integer.parseInt(current.group(2)));
+            sendJson(exchange, vm == null ? 404 : 200, vm == null ? Map.of() : Map.of("data", Map.of("status", vm.status())));
             return;
         }
 
