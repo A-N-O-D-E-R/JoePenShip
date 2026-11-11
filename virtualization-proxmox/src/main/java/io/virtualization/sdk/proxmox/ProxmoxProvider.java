@@ -42,7 +42,8 @@ import java.util.stream.Collectors;
  * <p>{@link #createFromImage} full-clones a QEMU template (the image identifier is the template's
  * VMID), then applies CPU/memory, cloud-init SSH keys ({@code configuration} key {@code
  * sshAuthorizedKeys}) and grows the boot disk to the {@code diskGb} provider option. The {@code node}
- * provider option picks the target node (default: the template's). The VM is left stopped.
+ * provider option picks the target node (default: the template's). {@code networks()} entries are
+ * Proxmox ipconfig strings (cloud-init network per NIC). The VM is left stopped.
  *
  * <p>{@link #applyFirewall} uses the VM-level Proxmox firewall: it turns the firewall on for every
  * NIC, sets both default policies to DROP and replaces the VM's rules with ACCEPT rules. The
@@ -144,6 +145,11 @@ public final class ProxmoxProvider implements VirtualizationProvider {
         }
         if (!image.identifier().matches("\\d+")) {
             throw new IllegalArgumentException("Proxmox image identifier must be a template VMID, got '" + image.identifier() + "'");
+        }
+        for (String net : spec.networks()) {
+            if (!net.matches("(ip|ip6)=[^\\s]+")) {
+                throw new IllegalArgumentException("Networks must be Proxmox ipconfig strings (ip=<cidr>|dhcp[,gw=<ip>]), got '" + net + "'");
+            }
         }
         // Proxmox templates cannot be pulled: every policy requires the template to exist.
         CreateWorkloadHandle handle = CreateWorkloadHandle.create("create-" + spec.name());
@@ -269,6 +275,13 @@ public final class ProxmoxProvider implements VirtualizationProvider {
             config.put("cores", String.valueOf(r.cpuCores()));
             config.put("memory", String.valueOf(r.memoryMb()));
         });
+        // Cloud-init network: networks() entries in Proxmox's ipconfig format ("ip=10.0.0.5/24,gw=10.0.0.1"
+        // or "ip=dhcp"), one per NIC in order; nameserver/searchdomain provider options.
+        for (int i = 0; i < spec.networks().size(); i++) {
+            config.put("ipconfig" + i, spec.networks().get(i));
+        }
+        spec.providerOptions().getString("nameserver").ifPresent(v -> config.put("nameserver", v));
+        spec.providerOptions().getString("searchdomain").ifPresent(v -> config.put("searchdomain", v));
         String keys = spec.configuration().get("sshAuthorizedKeys");
         if (keys != null) {
             // Proxmox wants sshkeys URL-encoded (spaces as %20) inside the form-encoded body.

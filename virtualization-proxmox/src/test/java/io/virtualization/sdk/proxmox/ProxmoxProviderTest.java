@@ -229,4 +229,22 @@ class ProxmoxProviderTest {
         assertThat(provider.getVirtualMachine("100").state()).isEqualTo(VirtualMachineState.RUNNING);
         assertThat(provider.listVirtualMachines().getFirst().state()).isEqualTo(VirtualMachineState.STOPPED);
     }
+
+    @Test
+    void createFromImageConfiguresTheGuestNetwork() {
+        server.addTemplate(9000, "pve1", "debian-13", "10G");
+        var spec = WorkloadSpec.builder("i-0net", WorkloadType.VIRTUAL_MACHINE)
+                .networks(List.of("ip=172.31.0.4/20,gw=172.31.0.1"))
+                .providerOptions(ProviderOptions.of(Map.of("nameserver", "172.31.0.2")))
+                .build();
+
+        var op = provider.createFromImage(new ImageReference("proxmox", "9000"), spec);
+
+        assertThat(op.await(Duration.ofSeconds(5))).isEqualTo(OperationStatus.SUCCEEDED);
+        Map<String, String> config = server.config(Integer.parseInt(op.workloadId().orElseThrow()));
+        assertThat(config).containsEntry("ipconfig0", "ip=172.31.0.4/20,gw=172.31.0.1").containsEntry("nameserver", "172.31.0.2");
+        assertThatThrownBy(() -> provider.createFromImage(new ImageReference("proxmox", "9000"),
+                WorkloadSpec.builder("bad", WorkloadType.VIRTUAL_MACHINE).networks(List.of("vmbr0")).build()))
+                .isInstanceOf(IllegalArgumentException.class);
+    }
 }
