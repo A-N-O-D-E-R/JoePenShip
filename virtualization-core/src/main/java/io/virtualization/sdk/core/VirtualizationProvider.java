@@ -80,4 +80,26 @@ public interface VirtualizationProvider {
     default Operation applyFirewall(String id, WorkloadFirewall firewall) {
         throw new UnsupportedCapabilityException(type().id() + " does not support workload firewalls");
     }
+
+    /**
+     * Attaches a storage volume (as listed by the provider's storage, e.g. a Proxmox volid) to a
+     * virtual machine as {@code device} (provider-specific slot, e.g. {@code scsi1}). Idempotent
+     * for the same VM and device.
+     *
+     * @throws UnsupportedCapabilityException if this provider does not support {@link Capability#VOLUMES}
+     * @throws ResourceNotFoundException if no virtual machine with the given id exists
+     */
+    default Operation attachVolume(String id, String volumeId, String device) {
+        throw new UnsupportedCapabilityException(type().id() + " does not support volumes");
+    }
+
+    /**
+     * Detaches a volume from a virtual machine, keeping its data. Succeeds if it is not attached.
+     *
+     * @throws UnsupportedCapabilityException if this provider does not support {@link Capability#VOLUMES}
+     * @throws ResourceNotFoundException if no virtual machine with the given id exists
+     */
+    default Operation detachVolume(String id, String volumeId) {
+        throw new UnsupportedCapabilityException(type().id() + " does not support volumes");
+    }
 }

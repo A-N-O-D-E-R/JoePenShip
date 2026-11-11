@@ -61,7 +61,8 @@ public final class ProxmoxProvider implements VirtualizationProvider {
 
     private static final ProviderCapabilities CAPABILITIES = ProviderCapabilities.of(
             Capability.START, Capability.STOP, Capability.REBOOT, Capability.SHUTDOWN, Capability.DESTROY,
-            Capability.FIREWALL);
+            Capability.FIREWALL, Capability.VOLUMES);
+    private static final Pattern DATA_SLOT = Pattern.compile("scsi([1-9]|[12]\\d|30)");
 
     private static final Pattern DISK_SIZE = Pattern.compile("(?:^|,)size=(\\d+)([KMGT])");
 
@@ -160,6 +161,57 @@ public final class ProxmoxProvider implements VirtualizationProvider {
                 handle.fail(e);
             } catch (RuntimeException e) {
                 handle.fail(new OperationException("Creating '" + spec.name() + "' failed: " + e.getMessage(), e));
+            }
+        });
+        return handle.operation();
+    }
+
+    /** {@code device}: a data slot {@code scsi1}..{@code scsi30} ({@code scsi0} is the boot disk). Hot-plugged on running VMs. */
+    @Override
+    public Operation attachVolume(String id, String volumeId, String device) {
+        if (!DATA_SLOT.matcher(device).matches()) {
+            throw new IllegalArgumentException("Device must be scsi1..scsi30, got '" + device + "'");
+        }
+        ClusterResourceDto vm = findResource(id);
+        return async("attach-" + id + "-" + device, () -> {
+            String base = "/nodes/" + vm.node() + "/qemu/" + id;
+            JsonNode config = client.getData(base + "/config");
+            if (volumeId.equals(config.path(device).asText("").split(",")[0])) {
+                return; // already attached there
+            }
+            if (config.hasNonNull(device)) {
+                throw new OperationException("Device " + device + " of VM " + id + " is in use");
+            }
+            ProxmoxStorageProvider.attachment(client, volumeId).ifPresent(a -> {
+                throw new OperationException("Volume " + volumeId + " is attached to VM " + a.vmid());
+            });
+            awaitIfTask(vm.node(), client.postForm(base + "/config", Map.of(device, volumeId)));
+        });
+    }
+
+    @Override
+    public Operation detachVolume(String id, String volumeId) {
+        ClusterResourceDto vm = findResource(id);
+        return async("detach-" + id, () -> {
+            String base = "/nodes/" + vm.node() + "/qemu/" + id;
+            var slot = ProxmoxStorageProvider.slotOf(client.getData(base + "/config"), volumeId);
+            if (slot.isPresent()) {
+                // A volume owned by another VMID leaves the config entirely (no unusedN): its data stays.
+                awaitIfTask(vm.node(), client.postForm(base + "/config", Map.of("delete", slot.get())));
+            }
+        });
+    }
+
+    private Operation async(String name, Runnable work) {
+        OperationHandle handle = OperationHandle.create(name);
+        Thread.ofVirtual().name(name).start(() -> {
+            try {
+                work.run();
+                handle.complete();
+            } catch (VirtualizationException e) {
+                handle.fail(e);
+            } catch (RuntimeException e) {
+                handle.fail(new OperationException(name + " failed: " + e.getMessage(), e));
             }
         });
         return handle.operation();
@@ -307,6 +359,10 @@ public final class ProxmoxProvider implements VirtualizationProvider {
         // nextid can race with another create: Proxmox then refuses the clone, so retry with a fresh id.
         for (int attempt = 1; ; attempt++) {
             String vmid = client.getData("/cluster/nextid").asText();
+            if (vmid.equals(String.valueOf(ProxmoxStorageProvider.OWNER_VMID))) {
+                // That VMID owns every standalone volume: a VM there would delete them all when destroyed.
+                throw new OperationException("Refusing VMID " + vmid + ", reserved for standalone volumes");
+            }
             Map<String, String> form = new LinkedHashMap<>();
             form.put("newid", vmid);
             form.put("name", name);

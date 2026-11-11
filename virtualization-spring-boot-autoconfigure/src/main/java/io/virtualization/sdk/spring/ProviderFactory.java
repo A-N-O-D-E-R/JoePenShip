@@ -12,6 +12,7 @@ import io.virtualization.sdk.storage.StorageProvider;
 import io.virtualization.sdk.proxmox.ProxmoxClientConfig;
 import io.virtualization.sdk.proxmox.ProxmoxCredentials;
 import io.virtualization.sdk.proxmox.ProxmoxProvider;
+import io.virtualization.sdk.proxmox.ProxmoxStorageProvider;
 import io.virtualization.sdk.qemu.QemuClientConfig;
 import io.virtualization.sdk.qemu.QemuProvider;
 
@@ -52,26 +53,31 @@ final class ProviderFactory {
 
     /**
      * Builds the {@link StorageProvider} counterpart of {@link #create}, if the provider's type
-     * has one — currently only {@code incus}. Proxmox and QEMU don't implement storage yet.
+     * has one — {@code incus} and {@code proxmox} (standalone volumes on the first online node's
+     * storages). QEMU doesn't implement storage yet.
      */
     static Optional<StorageProvider> createStorageProvider(String name, ProviderProperties properties) {
-        if (!"incus".equals(properties.type())) {
-            return Optional.empty();
-        }
-        return Optional.of(new IncusStorageProvider(buildIncusConfig(name, properties)));
+        return switch (properties.type()) {
+            case "incus" -> Optional.of(new IncusStorageProvider(buildIncusConfig(name, properties)));
+            case "proxmox" -> Optional.of(new ProxmoxStorageProvider(buildProxmoxConfig(name, properties), null));
+            default -> Optional.empty();
+        };
     }
 
     private static VirtualizationProvider createProxmox(String name, ProviderProperties properties) {
+        return new ProxmoxProvider(buildProxmoxConfig(name, properties));
+    }
+
+    private static ProxmoxClientConfig buildProxmoxConfig(String name, ProviderProperties properties) {
         ProxmoxProviderProperties typed = ProxmoxProviderProperties.from(name, properties);
         ProxmoxCredentials credentials = new ProxmoxCredentials(typed.tokenId(), typed.tokenSecret());
-        ProxmoxClientConfig config = new ProxmoxClientConfig(
+        return new ProxmoxClientConfig(
                 URI.create(typed.endpoint()),
                 credentials,
                 typed.verifySsl(),
                 Duration.ofSeconds(10),
                 Duration.ofSeconds(30),
                 Duration.ofSeconds(1));
-        return new ProxmoxProvider(config);
     }
 
     private static VirtualizationProvider createIncus(String name, ProviderProperties properties) {
