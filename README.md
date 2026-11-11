@@ -269,7 +269,7 @@ Add the starter:
 
 ```xml
 <dependency>
-  <groupId>io.virtualization.sdk</groupId>
+  <groupId>io.github.a-n-o-d-e-r</groupId>
   <artifactId>virtualization-spring-boot-starter</artifactId>
   <version>0.1.0-SNAPSHOT</version>
 </dependency>
